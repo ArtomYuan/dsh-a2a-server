@@ -29,6 +29,7 @@ import type { AgentHandle } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { scopeOf } from '@deepseek-ai/dsh-scope'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
 import http from 'node:http'
 import { mkdir, readFile, realpath, rename, writeFile } from 'node:fs/promises'
@@ -77,6 +78,9 @@ export interface Config {
   /** contextId→session 映射条目 TTL 天数（默认 7，超期条目在加载/写入时清理） */
   contextMapTtlDays?: number
 }
+
+/** 逐请求携带执行模式（同步 / 流式）：HTTP 层写入，execute 内读取 */
+const executionMode = new AsyncLocalStorage<{ streaming: boolean }>()
 
 /** 运行时配置（apply 时从 config / 环境初始化，提供安全默认值） */
 const runtimeConfig = {
@@ -323,6 +327,9 @@ class DshAgentExecutor implements AgentExecutor {
     const contextId = requestContext.contextId
     const userMessage = requestContext.userMessage
     const text = userMessageText(userMessage)
+    // 同步 SendMessage 与流式 SendStreamingMessage 复用本 execute；同步时只应
+    // 返回最终结果文本，中间事件不得作为 artifact 泄露进 task.artifacts
+    const streaming = executionMode.getStore()?.streaming ?? false
 
     try {
       // 1. 每个执行流必须以 task 事件开头
@@ -358,6 +365,8 @@ class DshAgentExecutor implements AgentExecutor {
       // 3. dsh 真实执行（按 contextId 复用/新建会话 → followup → whenIdle → 读最终文本），
       //    期间把高信号中间事件实时推为 A2A 流式 artifactUpdate
       const resultText = await this.runDshTask(text, contextId, (desc) => {
+        // 仅流式模式 emit 中间 artifactUpdate；同步模式直接丢弃，避免污染 artifacts
+        if (!streaming) return
         if (desc.kind === 'text') {
           // 文本块：append 到共享 'stream-text' artifact（客户端拼接成连续文本流）
           eventBus.publish(
@@ -677,25 +686,36 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
       // JSON-RPC 端点
       if (req.method === 'POST' && (req.url === '/' || req.url === '')) {
         const rawBody = await readBody(req)
+        // 从 JSON-RPC method 判定是否流式，经 AsyncLocalStorage 传给 executor：
+        // 同步 SendMessage 不 emit 中间 artifactUpdate，只返回最终结果文本
+        let isStreaming = false
+        try {
+          const method = (JSON.parse(rawBody) as { method?: unknown }).method
+          isStreaming = method === 'SendStreamingMessage' || method === 'SubscribeToTask'
+        } catch {
+          /* 非 JSON 请求体按非流式处理 */
+        }
         const requestedVersion =
           (req.headers['a2a-version'] as string | undefined) ?? A2A_PROTOCOL_VERSION
-        const context = new ServerCallContext({ requestedVersion })
-        const rpcResult = await transport.handle(rawBody, context)
-        if (typeof (rpcResult as unknown as { [Symbol.asyncIterator]?: unknown })[Symbol.asyncIterator] === 'function') {
-          // 流式（SendStreamingMessage / SubscribeToTask）→ SSE
-          res.writeHead(200, {
-            'Content-Type': 'text/event-stream',
-            'Cache-Control': 'no-cache',
-            Connection: 'keep-alive',
-          })
-          for await (const ev of rpcResult as AsyncGenerator<unknown, void, undefined>) {
-            res.write(formatSSEEvent(ev))
+        await executionMode.run({ streaming: isStreaming }, async () => {
+          const context = new ServerCallContext({ requestedVersion })
+          const rpcResult = await transport.handle(rawBody, context)
+          if (typeof (rpcResult as unknown as { [Symbol.asyncIterator]?: unknown })[Symbol.asyncIterator] === 'function') {
+            // 流式（SendStreamingMessage / SubscribeToTask）→ SSE
+            res.writeHead(200, {
+              'Content-Type': 'text/event-stream',
+              'Cache-Control': 'no-cache',
+              Connection: 'keep-alive',
+            })
+            for await (const ev of rpcResult as AsyncGenerator<unknown, void, undefined>) {
+              res.write(formatSSEEvent(ev))
+            }
+            res.end()
+          } else {
+            res.writeHead(200, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify(rpcResult))
           }
-          res.end()
-        } else {
-          res.writeHead(200, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify(rpcResult))
-        }
+        })
         return
       }
 
