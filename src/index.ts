@@ -5,10 +5,14 @@
  * P0 最小闭环：
  *   - node:http 常驻 listener（Bearer token 认证 + 路由），挂
  *     `@a2a-js/sdk` v1.1.0 的 `JsonRpcTransportHandler`。
- *   - `AgentExecutor` 把 A2A task 的文本同步投给一个**新建**的 dsh agent
- *     会话执行，最终 assistant 输出作为 A2A artifact 返回。
- *   - 会话策略（最小版）：每次任务新建独立会话，任务毕释放句柄；
- *     origin/sessionId 复用映射留 P1。
+ *   - `AgentExecutor` 把 A2A task 的文本同步投给 dsh agent 会话执行，最终
+ *     assistant 输出作为 A2A artifact 返回。
+ *
+ * P1 contextId 会话映射：
+ *   - A2A `message.contextId`（Hermes 传 origin 派生）→ dsh 会话键。同
+ *     contextId 复用同一 dsh 会话（上下文连续），异 contextId 隔离。
+ *   - 两级接管：持久映射命中 → `ctx.agents.resume`；未命中 → 新建 + 写映射。
+ *     映射持久化到 `$DSH_HOME/storages/a2a-context-map.json`，跨重启续接。
  */
 
 import type { Context } from '@deepseek-ai/cordis'
@@ -21,8 +25,9 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import { scopeOf } from '@deepseek-ai/dsh-scope'
 import { randomUUID } from 'node:crypto'
 import http from 'node:http'
-import { realpath } from 'node:fs/promises'
-import { resolve } from 'node:path'
+import { mkdir, readFile, realpath, rename, writeFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
 import {
   A2A_PROTOCOL_VERSION,
   AGENT_CARD_PATH,
@@ -43,7 +48,7 @@ import type { AgentExecutor, ExecutionEventBus, RequestContext } from '@a2a-js/s
 export const name = 'dsh-a2a-server'
 
 /** 声明依赖的核心服务（必须与代码里的 ctx.get / 直接调用对齐） */
-export const inject = ['agents', 'agentPresets']
+export const inject = ['agents', 'agentPresets', 'sessions']
 
 /** 插件配置 */
 export interface Config {
@@ -57,10 +62,12 @@ export interface Config {
   provider?: string
   /** 执行任务的模型（默认 deepseek-v4-flash；空串 = 跟随 dsh 用户/默认设置） */
   model?: string
-  /** 挂载的 agent preset（默认 standard） */
+  /** 挂载的 agent preset（默认 standard；可设 agent-team 等） */
   preset?: string
   /** 任务工作目录（默认进程 cwd） */
   cwd?: string
+  /** contextId→session 映射持久文件路径（默认 $DSH_HOME/storages/a2a-context-map.json） */
+  contextMapPath?: string
 }
 
 /** 运行时配置（apply 时从 config / 环境初始化，提供安全默认值） */
@@ -121,6 +128,117 @@ function isPortFree(port: number): Promise<boolean> {
   })
 }
 
+// ── contextId 会话映射（P1）────────────────────────────────────────────
+// 键 `${contextId}\0${cwd}` → sessionId（同 harness-mcp-server 的 origin-map
+// 格式）。同 contextId 复用同一 dsh 会话；映射持久化跨重启 resume。
+
+/** 常驻内存映射：复合键（contextId\0cwd）→ sessionId */
+const contextMap = new Map<string, string>()
+
+/** 映射落盘路径；apply() 解析 dshHomePath 服务后赋值 */
+let contextMapPath: string | null = null
+
+/** 映射落盘串行链（避免并发写交错） */
+let contextMapWriteChain = Promise.resolve()
+
+/** 读 a2a-context-map.json 回填 contextMap（ENOENT 静默空映射，其它失败 warn 后空映射） */
+async function loadContextMap(): Promise<void> {
+  if (contextMapPath === null) return
+  try {
+    const raw = await readFile(contextMapPath, 'utf8')
+    const parsed = JSON.parse(raw) as unknown
+    if (parsed && typeof parsed === 'object') {
+      for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+        if (typeof v === 'string') contextMap.set(k, v)
+      }
+    }
+  } catch (e) {
+    if ((e as { code?: string }).code !== 'ENOENT') {
+      console.warn('[dsh-a2a-server] context-map load failed:', (e as Error)?.message ?? e)
+    }
+  }
+}
+
+/** 串行落盘 contextMap（快照 → mkdir → tmp 写 → rename 原子覆盖）；失败仅 warn 不阻断 */
+function persistContextMap(): Promise<void> {
+  contextMapWriteChain = contextMapWriteChain.then(async () => {
+    if (contextMapPath === null) return
+    const snapshot = JSON.stringify(Object.fromEntries(contextMap), null, 2)
+    const tmp = `${contextMapPath}.tmp`
+    try {
+      await mkdir(dirname(contextMapPath), { recursive: true })
+      await writeFile(tmp, snapshot)
+      await rename(tmp, contextMapPath)
+    } catch (e) {
+      console.warn('[dsh-a2a-server] context-map persist failed:', (e as Error)?.message ?? e)
+    }
+  })
+  return contextMapWriteChain
+}
+
+/** 会话解析结果：disposeAfter = true 表示任务毕须 flush + dispose 释放句柄 */
+interface ResolvedSession {
+  sessionId: SessionId
+  handle: AgentHandle
+}
+
+/** 组装 agent 的 provider/model/preset 选项（创建与 resume 共用的 agentOptions + setup） */
+function agentComposition(ctx: Context) {
+  return {
+    agentOptions: {
+      provider: runtimeConfig.provider,
+      // model 为空则省略，让 dsh 跟随用户/默认设置
+      ...(runtimeConfig.model ? { model: runtimeConfig.model } : {}),
+    },
+    setup: async (agentCtx: Context) => {
+      // dsh rc.6 bug 兜底：setup 收到的 agent ctx 可能丢 scope tag，
+      // 无 scope 时跳过挂载（降级为无工具 agent），避免整体崩溃
+      if (scopeOf(agentCtx) === undefined) {
+        console.warn('[dsh-a2a-server] agent ctx unscoped; preset mount skipped')
+        return
+      }
+      await ctx.agentPresets.mount(agentCtx, runtimeConfig.preset)
+    },
+  }
+}
+
+/**
+ * 解析（或新建）contextId 对应的 dsh 会话。两级接管：
+ * 映射命中 → `ctx.agents.resume`（失败懒删映射落到新建分支）；未命中 → 新建 + 写映射。
+ */
+async function resolveSession(
+  ctx: Context,
+  cwd: string,
+  contextId: string,
+): Promise<ResolvedSession> {
+  const key = `${contextId}\u0000${cwd}`
+  const mapped = contextMap.get(key)
+  if (mapped !== undefined) {
+    const sid = SessionId(mapped)
+    try {
+      const handle = await ctx.agents.resume({
+        resumeSessionId: sid,
+        ...agentComposition(ctx),
+      })
+      return { sessionId: sid, handle }
+    } catch (e) {
+      // resume 失败（会话已删/损坏）：懒删映射，落到下方新建分支（不抛错）
+      contextMap.delete(key)
+      void persistContextMap()
+      console.warn('[dsh-a2a-server] contextId resume failed, falling back to new session:', (e as Error)?.message ?? e)
+    }
+  }
+  const newSessionId = SessionId(randomUUID())
+  const handle = await ctx.agents.create({
+    sessionId: newSessionId,
+    ...agentComposition(ctx),
+    meta: { cwd, agentPreset: runtimeConfig.preset },
+  })
+  contextMap.set(key, String(newSessionId))
+  void persistContextMap()
+  return { sessionId: newSessionId, handle }
+}
+
 /**
  * 把 A2A task 映射为一次 dsh agent 同步执行（最小版：每次新建独立会话）。
  * `execute` 按 A2A 规范发布 task → statusUpdate(working) → artifact →
@@ -173,8 +291,8 @@ class DshAgentExecutor implements AgentExecutor {
         }),
       )
 
-      // 3. dsh 真实执行（新建会话 → followup → whenIdle → 读最终文本）
-      const resultText = await this.runDshTask(text)
+      // 3. dsh 真实执行（按 contextId 复用/新建会话 → followup → whenIdle → 读最终文本）
+      const resultText = await this.runDshTask(text, contextId)
 
       if (this.cancelled.has(taskId)) {
         eventBus.publish(
@@ -229,28 +347,10 @@ class DshAgentExecutor implements AgentExecutor {
     }
   }
 
-  /** 新建一个 dsh 会话同步执行任务，返回最终 assistant 文本；句柄任务毕释放 */
-  private async runDshTask(text: string): Promise<string> {
+  /** 按 contextId 解析 dsh 会话执行任务，返回最终 assistant 文本；句柄任务毕 flush + 释放 */
+  private async runDshTask(text: string, contextId: string): Promise<string> {
     const cwd = await canonicalCwd(runtimeConfig.cwd || process.cwd())
-    const sessionId = SessionId(randomUUID())
-    const handle: AgentHandle = await this.ctx.agents.create({
-      sessionId,
-      meta: { cwd, agentPreset: runtimeConfig.preset },
-      agentOptions: {
-        provider: runtimeConfig.provider,
-        // model 为空则省略，让 dsh 跟随用户/默认设置
-        ...(runtimeConfig.model ? { model: runtimeConfig.model } : {}),
-      },
-      setup: async (agentCtx) => {
-        // dsh rc.6 bug 兜底：setup 收到的 agent ctx 可能丢 scope tag，
-        // 无 scope 时跳过挂载（降级为无工具 agent），避免整体崩溃
-        if (scopeOf(agentCtx) === undefined) {
-          console.warn('[dsh-a2a-server] agent ctx unscoped; preset mount skipped')
-          return
-        }
-        await this.ctx.agentPresets.mount(agentCtx, runtimeConfig.preset)
-      },
-    })
+    const { handle } = await resolveSession(this.ctx, cwd, contextId)
 
     try {
       const baseline = ((handle.agent.session as unknown as { log?: unknown[] }).log ?? []).length
@@ -276,11 +376,16 @@ class DshAgentExecutor implements AgentExecutor {
       }
       return out.trim() || '(no text output)'
     } finally {
-      // 最小版：新建独立会话，任务毕释放句柄（会话持久化保留，可凭 sessionId 续接）
+      // 跨重启 resume 依赖会话已持久化：任务毕 flush，再释放句柄
+      try {
+        await (this.ctx.get('sessions') as { flush?: (s: unknown) => Promise<unknown> } | undefined)?.flush?.(handle.agent.session)
+      } catch {
+        /* flush 失败不阻断结果返回 */
+      }
       try {
         await handle.dispose()
       } catch {
-        /* 释放失败不影响结果返回 */
+        /* 释放失败不影响结果 */
       }
     }
   }
@@ -344,6 +449,12 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
   if (config.cwd) runtimeConfig.cwd = config.cwd
   // 运行配置也可从环境读（覆盖 cordis 配置之外的最简通道）
   if (process.env.A2A_SERVER_TOKEN) runtimeConfig.authToken = process.env.A2A_SERVER_TOKEN
+
+  // contextId 会话映射持久文件路径: 配置 > dshHomePath 服务 > ~/.dsh fallback
+  const dshHome = ctx.get('dshHomePath') as ((...segments: string[]) => string) | undefined
+  contextMapPath = config.contextMapPath
+    ?? (dshHome ? dshHome('storages', 'a2a-context-map.json') : join(homedir(), '.dsh', 'storages', 'a2a-context-map.json'))
+  await loadContextMap()
 
   const host = config.host ?? '127.0.0.1'
   const port = config.port ?? (await probePort())
@@ -430,10 +541,11 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
   })
   console.log(`[dsh-a2a-server] A2A server listening on ${host}:${port}`)
 
-  // 标准 cordis 生命周期：卸载时关闭 server
+  // 标准 cordis 生命周期：卸载时关闭 server + 清空映射
   ctx.effect(() => {
     return () => {
       server.close()
+      contextMap.clear()
     }
   }, 'dsh-a2a-server')
 }

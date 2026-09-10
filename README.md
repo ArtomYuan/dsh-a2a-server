@@ -3,9 +3,10 @@
 dsh 侧的 A2A (Agent2Agent) server 插件库：把 dsh agent 会话以 A2A 协议暴露给
 远端 agent（如 Hermes），实现「Hermes = brain，dsh = arms」的互操作。
 
-> 状态：**P0 最小闭环**。A2A server 业务逻辑已落地（node:http + Bearer 认证 +
-> `@a2a-js/sdk` JsonRpcTransportHandler + AgentExecutor → dsh 会话同步执行），
-> 通过 P0 闭环验证（agent card + 真实任务往返）后才推送 GitHub。
+> 状态：**P1 contextId 会话映射 + agent-team 挂载**。A2A server 业务逻辑已落地
+> （node:http + Bearer 认证 + `@a2a-js/sdk` JsonRpcTransportHandler + AgentExecutor
+> → dsh 会话同步执行）；`message.contextId` 映射到 dsh 会话（复用 + 跨重启 resume），
+> `preset` 可配置（含 agent-team）。P0/P1 闭环验证通过后已推 GitHub。
 
 ## 安装
 
@@ -55,7 +56,8 @@ dsh plugin --profile <name> remove dsh-a2a-server
 ## 包结构（bundle）
 
 - `package.json`：`dsh.bundle.patch` 声明 + `@deepseek-ai/cordis` peer/dev 镜像。
-- `cordis.patch.yml`：patch 条目数组，`insert` 一条 A2A server 插件行。
+- `cordis.patch.yml`：patch 条目数组，`insert` 一条 agent-presets 行（服务依赖）
+  与一条 A2A server 插件行。
 - `src/index.ts`：插件入口（`name` / `inject` / `apply`）。
 - `tsdown.prepare.config.ts`：git 安装时 `prepare` 的自包含转译配置（转译
   `src/` → `lib/`，不做项目引用、不做类型检查）。
@@ -70,17 +72,23 @@ A2A server 暴露两个端点（JSON-RPC binding，协议版本 `1.0`）：
   `supportedInterfaces[].protocolBinding = "JSONRPC"`、`protocolVersion = "1.0"`、
   `capabilities.streaming = true`。
 - `POST /`：JSON-RPC。最小闭环用 `method: "SendMessage"`，`params.message`
-  携带用户文本消息；服务端 `AgentExecutor` 把文本投给一个新建的 dsh agent
-  会话同步执行，最终输出作为 artifact（`lastChunk: true`）返回，任务状态流
-  为 `submitted → working → completed`。流式方法 `SendStreamingMessage` /
+  携带用户文本消息；服务端 `AgentExecutor` 把文本投给 dsh agent 会话同步执行，
+  最终输出作为 artifact（`lastChunk: true`）返回，任务状态流为
+  `submitted → working → completed`。流式方法 `SendStreamingMessage` /
   `SubscribeToTask` 以 SSE 返回。
 
 认证：配置 `authToken` 后，所有请求必须带 `Authorization: Bearer <token>`，
 否则 `401`。
 
+**contextId 会话映射**：`params.message.contextId`（Hermes 由 origin 派生）映射
+到 dsh 会话——同 contextId 复用同一 dsh 会话（上下文连续），异 contextId 隔离；
+映射持久化到 `$DSH_HOME/storages/a2a-context-map.json`（格式
+`contextId\0cwd → sessionId`），server 重启后同 contextId 经 `ctx.agents.resume`
+续接。缺 contextId 时 server 生成随机 contextId（等于每次新建，不复用）。
+
 ### 事件
 
-P0 只实现同步任务往返（task → statusUpdate → artifact → statusUpdate），
+当前只实现同步任务往返（task → statusUpdate → artifact → statusUpdate），
 暂不向客户端推送思考 / 工具 / 文本 / 进度中间事件流；流式事件推送留后续阶段。
 
 ### 扩展点 / 配置
@@ -92,17 +100,68 @@ P0 只实现同步任务往返（task → statusUpdate → artifact → statusUp
 - `authToken`：Bearer token（设置后强制校验）。
 - `provider`：后端 provider（默认 `deepseek-official`）。
 - `model`：执行模型（默认 `deepseek-v4-flash`；空串 = 跟随 dsh 用户/默认设置）。
-- `preset`：挂载的 agent preset（默认 `standard`）。
+- `preset`：挂载的 agent preset（默认 `standard`；可设 `agent-team` 等，见下）。
 - `cwd`：任务工作目录（默认进程 cwd）。
+- `contextMapPath`：contextId→session 映射持久文件路径（默认
+  `$DSH_HOME/storages/a2a-context-map.json`）。
 
-注入依赖：`agents`、`agentPresets`。
+注入依赖：`agents`、`agentPresets`、`sessions`。
+
+### agent-team 挂载（部署说明）
+
+`agent-team` 预设依赖 tool-subagent 的 `modelSelectionSettings`（web-app 独有
+host 服务 `subagent-model-selection-settings`）与九个 Team 工具（来自
+`@deepseek-ai/dsh-experimental-agent-team-profile` bundle）。dsh-base-only 的
+独立 profile 缺这些 host 行，须在 profile 的 cordis 树补上（等价于
+agent-team-profile bundle 的 `cordis.patch.yml` + web-app 的 host 行）：
+
+```yaml
+- id: tool-subagent-control
+  disabled: true
+- id: tool-subagent-list-agents
+  disabled: true
+- id: tool-subagent
+  config:
+    provider: spawn
+    toolName: subagent
+    backgroundMode: one-shot
+- id: tool-subagent-fork
+  config:
+    provider: fork
+    toolName: subagent_fork
+    backgroundMode: one-shot
+- insert:
+    - id: subagent-model-selection-settings
+      name: '@deepseek-ai/dsh-tool-subagent/model-selection-settings'
+    - id: agent-team
+      name: '@deepseek-ai/dsh-experimental-agent-team'
+      config:
+        maxMembers: 8
+        maxTasks: 256
+        maxPendingMessagesPerMember: 64
+        maxMessageBytes: 65536
+        disposalTimeoutMs: 5000
+    - id: tool-agent-team
+      name: '@deepseek-ai/dsh-experimental-tool-agent-team'
+      config:
+        freshProvider: spawn
+        forkProvider: fork
+- id: a2a-server
+  config:
+    preset: agent-team
+```
+
+其中 `@deepseek-ai/dsh-experimental-agent-team` / `-tool-agent-team` 须可解析
+（完整 profile 自带；独立 profile 用 `dsh plugin add link:<源码树路径>` 挂接）。
+`agent-team` 预设本体来自 user root（`$DSH_HOME/.agent-presets/agent-team`，
+`includeUserRoot` 默认纳入）。
 
 ### 设计说明
 
-- 会话语义（最小版）：每次 A2A task 新建一个独立 dsh 会话执行，任务毕释放句柄
-  （会话持久化保留，可凭 sessionId 续接）。「一个 Hermes 对话 session ↔ 一个
-  dsh 会话」的 origin/复用映射留 P1。
-- 流式粒度：P0 为同步任务往返（阻塞式 `SendMessage`），不推中间事件流。
+- 会话语义（P1）：A2A `message.contextId` ↔ dsh 会话。同 contextId 复用同一
+  dsh 会话（上下文连续），异 contextId 隔离；两级接管（持久映射命中 → resume，
+  未命中 → 新建 + 写映射），映射持久化跨重启 resume。任务毕 flush + 释放句柄。
+- 流式粒度：同步任务往返（阻塞式 `SendMessage`），不推中间事件流。
 - 传输选型：JSON-RPC over node:http（自建 listener，非 express）；agent card
   走 `/.well-known/agent-card.json` 公开端点。
 
