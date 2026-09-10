@@ -3,9 +3,9 @@
 dsh 侧的 A2A (Agent2Agent) server 插件库：把 dsh agent 会话以 A2A 协议暴露给
 远端 agent（如 Hermes），实现「Hermes = brain，dsh = arms」的互操作。
 
-> 状态：**P-1 骨架**。本仓库当前只建立 bundle 包形态、cordis 补丁骨架、插件
-> 入口骨架与部署说明；A2A server 的业务逻辑在 P0 落地，通过 P0 闭环验证后才
-> 推送 GitHub。
+> 状态：**P0 最小闭环**。A2A server 业务逻辑已落地（node:http + Bearer 认证 +
+> `@a2a-js/sdk` JsonRpcTransportHandler + AgentExecutor → dsh 会话同步执行），
+> 通过 P0 闭环验证（agent card + 真实任务往返）后才推送 GitHub。
 
 ## 安装
 
@@ -60,34 +60,58 @@ dsh plugin --profile <name> remove dsh-a2a-server
 - `tsdown.prepare.config.ts`：git 安装时 `prepare` 的自包含转译配置（转译
   `src/` → `lib/`，不做项目引用、不做类型检查）。
 
-## 章节骨架（正文待 P0+ 填写）
+## 章节
 
 ### 服务 API
 
-TODO(P0)：A2A server 暴露的端点（`/agent-card`、`/tasks` send、`/tasks/{id}`
-get/cancel 等）及请求/响应字段。
+A2A server 暴露两个端点（JSON-RPC binding，协议版本 `1.0`）：
+
+- `GET /.well-known/agent-card.json`：公开的 agent card（JSON）。含
+  `supportedInterfaces[].protocolBinding = "JSONRPC"`、`protocolVersion = "1.0"`、
+  `capabilities.streaming = true`。
+- `POST /`：JSON-RPC。最小闭环用 `method: "SendMessage"`，`params.message`
+  携带用户文本消息；服务端 `AgentExecutor` 把文本投给一个新建的 dsh agent
+  会话同步执行，最终输出作为 artifact（`lastChunk: true`）返回，任务状态流
+  为 `submitted → working → completed`。流式方法 `SendStreamingMessage` /
+  `SubscribeToTask` 以 SSE 返回。
+
+认证：配置 `authToken` 后，所有请求必须带 `Authorization: Bearer <token>`，
+否则 `401`。
 
 ### 事件
 
-TODO(P0)：server 向 Hermes 侧推送的事件流（思考 / 工具 / 状态 / 文本 / 进度）
-及每条事件的字段契约。
+P0 只实现同步任务往返（task → statusUpdate → artifact → statusUpdate），
+暂不向客户端推送思考 / 工具 / 文本 / 进度中间事件流；流式事件推送留后续阶段。
 
 ### 扩展点 / 配置
 
-TODO(P0)：`Config` 字段（端口、agent card、agent-executor 映射等）及 cordis
-注入依赖。
+`Config` 字段（cordis.yml 插件 `config`，也可从环境 `A2A_SERVER_TOKEN` 读 token）：
+
+- `port`：监听端口（缺省探测 8092/8093/8094 首个空闲端口）。
+- `host`：监听地址（默认 `127.0.0.1`，仅本机）。
+- `authToken`：Bearer token（设置后强制校验）。
+- `provider`：后端 provider（默认 `deepseek-official`）。
+- `model`：执行模型（默认 `deepseek-v4-flash`；空串 = 跟随 dsh 用户/默认设置）。
+- `preset`：挂载的 agent preset（默认 `standard`）。
+- `cwd`：任务工作目录（默认进程 cwd）。
+
+注入依赖：`agents`、`agentPresets`。
 
 ### 设计说明
 
-TODO(P0)：会话语义（一个 Hermes 对话 session ↔ 一个 dsh 会话）、流式粒度、
-传输选型与回滚。
+- 会话语义（最小版）：每次 A2A task 新建一个独立 dsh 会话执行，任务毕释放句柄
+  （会话持久化保留，可凭 sessionId 续接）。「一个 Hermes 对话 session ↔ 一个
+  dsh 会话」的 origin/复用映射留 P1。
+- 流式粒度：P0 为同步任务往返（阻塞式 `SendMessage`），不推中间事件流。
+- 传输选型：JSON-RPC over node:http（自建 listener，非 express）；agent card
+  走 `/.well-known/agent-card.json` 公开端点。
 
 ### 命名
 
 - 包名：`dsh-a2a-server`（bundle 补丁中 `name` 引用此名做 Node 解析）。
 - 补丁行逻辑 id：`a2a-server`。
-- P0 的插件 role 参考 `Executor`（对应 A2A `AgentExecutor` 映射）——P-1 只定名，
-  未实现。
+- 插件 role：`Executor`（对应 A2A `AgentExecutor` 映射，把 A2A task 文本投给
+  dsh agent 会话执行）。
 
 ## License
 
@@ -95,5 +119,11 @@ MIT（暂定，与上游生态一致；最终许可以管理员确认为准）�
 
 ## 开发
 
-TODO(P0)：`pnpm install` / `pnpm run prepare` / `pnpm run typecheck`（类型检查
-在 P0 引入 CI 后补齐）。
+```sh
+pnpm install      # 独立 workspace（pnpm-workspace.yaml 隔离，不碰主仓库 lockfile）
+pnpm run build    # tsdown 转译 src/ → lib/（standalone，无项目引用）
+pnpm run typecheck # tsc --noEmit
+```
+
+`lib/index.js` 由 tsdown 直接转译（ESM），`@deepseek-ai/*` 与 `@a2a-js/sdk`
+均为外部依赖，不打包进产物；运行时在 profile 内解析。
