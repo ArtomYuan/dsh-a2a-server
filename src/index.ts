@@ -13,6 +13,12 @@
  *     contextId 复用同一 dsh 会话（上下文连续），异 contextId 隔离。
  *   - 两级接管：持久映射命中 → `ctx.agents.resume`；未命中 → 新建 + 写映射。
  *     映射持久化到 `$DSH_HOME/storages/a2a-context-map.json`，跨重启续接。
+ *
+ * P2a 流式中间事件 + 映射清理：
+ *   - `SendStreamingMessage` 流式模式下，订阅 dsh agent 的 `session/event`，
+ *     把思考/工具/状态/文本等中间事件作为 A2A `artifactUpdate`（文本用 text
+ *     Part、非文本用 data Part 私有扩展）实时推给客户端。
+ *   - contextMap 每条目记 lastUsedAt，TTL（默认 7 天）清理过期孤儿条目。
  */
 
 import type { Context } from '@deepseek-ai/cordis'
@@ -68,6 +74,8 @@ export interface Config {
   cwd?: string
   /** contextId→session 映射持久文件路径（默认 $DSH_HOME/storages/a2a-context-map.json） */
   contextMapPath?: string
+  /** contextId→session 映射条目 TTL 天数（默认 7，超期条目在加载/写入时清理） */
+  contextMapTtlDays?: number
 }
 
 /** 运行时配置（apply 时从 config / 环境初始化，提供安全默认值） */
@@ -78,6 +86,7 @@ const runtimeConfig = {
   preset: 'standard',
   authToken: '',
   cwd: '',
+  contextMapTtlDays: 7,
 }
 
 /** 构造一个纯文本 Part */
@@ -87,6 +96,16 @@ function textPart(value: string): Part {
     metadata: undefined,
     filename: '',
     mediaType: 'text/plain',
+  }
+}
+
+/** 构造一个结构化 data Part（私有扩展：承载思考/工具/状态等中间事件） */
+function dataPart(value: unknown): Part {
+  return {
+    content: { $case: 'data', value },
+    metadata: undefined,
+    filename: '',
+    mediaType: 'application/json',
   }
 }
 
@@ -132,8 +151,14 @@ function isPortFree(port: number): Promise<boolean> {
 // 键 `${contextId}\0${cwd}` → sessionId（同 harness-mcp-server 的 origin-map
 // 格式）。同 contextId 复用同一 dsh 会话；映射持久化跨重启 resume。
 
-/** 常驻内存映射：复合键（contextId\0cwd）→ sessionId */
-const contextMap = new Map<string, string>()
+/** 映射条目：sessionId + 最近使用时间戳（TTL 清理依据） */
+interface ContextMapEntry {
+  sessionId: string
+  lastUsedAt: number
+}
+
+/** 常驻内存映射：复合键（contextId\0cwd）→ { sessionId, lastUsedAt } */
+const contextMap = new Map<string, ContextMapEntry>()
 
 /** 映射落盘路径；apply() 解析 dshHomePath 服务后赋值 */
 let contextMapPath: string | null = null
@@ -141,7 +166,22 @@ let contextMapPath: string | null = null
 /** 映射落盘串行链（避免并发写交错） */
 let contextMapWriteChain = Promise.resolve()
 
-/** 读 a2a-context-map.json 回填 contextMap（ENOENT 静默空映射，其它失败 warn 后空映射） */
+/** 清理超期条目（lastUsedAt 超过 TTL 天）；返回清理数 */
+function cleanupContextMap(): number {
+  const ttlMs = runtimeConfig.contextMapTtlDays * 24 * 60 * 60 * 1000
+  const now = Date.now()
+  let removed = 0
+  for (const [k, entry] of contextMap) {
+    if (now - entry.lastUsedAt > ttlMs) {
+      contextMap.delete(k)
+      removed++
+    }
+  }
+  if (removed > 0) console.log(`[dsh-a2a-server] context-map cleanup: removed ${removed} expired entries`)
+  return removed
+}
+
+/** 读 a2a-context-map.json 回填 contextMap 并清理过期条目（ENOENT 静默空映射） */
 async function loadContextMap(): Promise<void> {
   if (contextMapPath === null) return
   try {
@@ -149,9 +189,19 @@ async function loadContextMap(): Promise<void> {
     const parsed = JSON.parse(raw) as unknown
     if (parsed && typeof parsed === 'object') {
       for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-        if (typeof v === 'string') contextMap.set(k, v)
+        // 向后兼容：旧格式 v 为 string（sessionId）；新格式为 { sessionId, lastUsedAt }
+        if (typeof v === 'string') {
+          contextMap.set(k, { sessionId: v, lastUsedAt: Date.now() })
+        } else if (v && typeof v === 'object' && typeof (v as { sessionId?: unknown }).sessionId === 'string') {
+          const entry = v as { sessionId: string; lastUsedAt?: unknown }
+          contextMap.set(k, {
+            sessionId: entry.sessionId,
+            lastUsedAt: typeof entry.lastUsedAt === 'number' ? entry.lastUsedAt : Date.now(),
+          })
+        }
       }
     }
+    cleanupContextMap()
   } catch (e) {
     if ((e as { code?: string }).code !== 'ENOENT') {
       console.warn('[dsh-a2a-server] context-map load failed:', (e as Error)?.message ?? e)
@@ -159,10 +209,11 @@ async function loadContextMap(): Promise<void> {
   }
 }
 
-/** 串行落盘 contextMap（快照 → mkdir → tmp 写 → rename 原子覆盖）；失败仅 warn 不阻断 */
+/** 串行落盘 contextMap（先清理过期 → 快照 → mkdir → tmp 写 → rename 原子覆盖）；失败仅 warn 不阻断 */
 function persistContextMap(): Promise<void> {
   contextMapWriteChain = contextMapWriteChain.then(async () => {
     if (contextMapPath === null) return
+    cleanupContextMap()
     const snapshot = JSON.stringify(Object.fromEntries(contextMap), null, 2)
     const tmp = `${contextMapPath}.tmp`
     try {
@@ -180,6 +231,17 @@ function persistContextMap(): Promise<void> {
 interface ResolvedSession {
   sessionId: SessionId
   handle: AgentHandle
+}
+
+/** 流式中间事件描述符（dsh 会话事件 → 高信号映射，见 runDshTask 的订阅器） */
+interface StreamEventDescriptor {
+  kind: 'text' | 'thinking' | 'tool_call' | 'tool_result' | 'turn_start' | 'turn_end'
+  turn?: number
+  step?: number
+  text?: string
+  name?: string
+  arguments?: string
+  reason?: string
 }
 
 /** 组装 agent 的 provider/model/preset 选项（创建与 resume 共用的 agentOptions + setup） */
@@ -214,12 +276,14 @@ async function resolveSession(
   const key = `${contextId}\u0000${cwd}`
   const mapped = contextMap.get(key)
   if (mapped !== undefined) {
-    const sid = SessionId(mapped)
+    const sid = SessionId(mapped.sessionId)
     try {
       const handle = await ctx.agents.resume({
         resumeSessionId: sid,
         ...agentComposition(ctx),
       })
+      // 命中：刷新最近使用时间戳（TTL 依据）
+      mapped.lastUsedAt = Date.now()
       return { sessionId: sid, handle }
     } catch (e) {
       // resume 失败（会话已删/损坏）：懒删映射，落到下方新建分支（不抛错）
@@ -234,7 +298,7 @@ async function resolveSession(
     ...agentComposition(ctx),
     meta: { cwd, agentPreset: runtimeConfig.preset },
   })
-  contextMap.set(key, String(newSessionId))
+  contextMap.set(key, { sessionId: String(newSessionId), lastUsedAt: Date.now() })
   void persistContextMap()
   return { sessionId: newSessionId, handle }
 }
@@ -291,8 +355,49 @@ class DshAgentExecutor implements AgentExecutor {
         }),
       )
 
-      // 3. dsh 真实执行（按 contextId 复用/新建会话 → followup → whenIdle → 读最终文本）
-      const resultText = await this.runDshTask(text, contextId)
+      // 3. dsh 真实执行（按 contextId 复用/新建会话 → followup → whenIdle → 读最终文本），
+      //    期间把高信号中间事件实时推为 A2A 流式 artifactUpdate
+      const resultText = await this.runDshTask(text, contextId, (desc) => {
+        if (desc.kind === 'text') {
+          // 文本块：append 到共享 'stream-text' artifact（客户端拼接成连续文本流）
+          eventBus.publish(
+            AgentEvent.artifactUpdate({
+              taskId,
+              contextId,
+              artifact: {
+                artifactId: 'stream-text',
+                name: 'StreamText',
+                description: '流式文本块',
+                parts: [textPart(desc.text ?? '')],
+                metadata: undefined,
+                extensions: [],
+              },
+              append: true,
+              lastChunk: false,
+              metadata: undefined,
+            }),
+          )
+        } else {
+          // 思考/工具/状态：data Part 私有扩展（JSON 描述符）
+          eventBus.publish(
+            AgentEvent.artifactUpdate({
+              taskId,
+              contextId,
+              artifact: {
+                artifactId: randomUUID(),
+                name: 'StreamEvent',
+                description: '流式中间事件',
+                parts: [dataPart(desc)],
+                metadata: undefined,
+                extensions: [],
+              },
+              append: false,
+              lastChunk: false,
+              metadata: undefined,
+            }),
+          )
+        }
+      })
 
       if (this.cancelled.has(taskId)) {
         eventBus.publish(
@@ -348,19 +453,103 @@ class DshAgentExecutor implements AgentExecutor {
   }
 
   /** 按 contextId 解析 dsh 会话执行任务，返回最终 assistant 文本；句柄任务毕 flush + 释放 */
-  private async runDshTask(text: string, contextId: string): Promise<string> {
+  private async runDshTask(
+    text: string,
+    contextId: string,
+    onEvent: (desc: StreamEventDescriptor) => void,
+  ): Promise<string> {
     const cwd = await canonicalCwd(runtimeConfig.cwd || process.cwd())
-    const { handle } = await resolveSession(this.ctx, cwd, contextId)
+    const { sessionId, handle } = await resolveSession(this.ctx, cwd, contextId)
 
     try {
       const baseline = ((handle.agent.session as unknown as { log?: unknown[] }).log ?? []).length
-      handle.agent.followup(
-        createUserMessage({
-          content: [{ type: 'text', text }],
-          source: { kind: 'plugin', plugin: 'dsh-a2a-server' },
-        }),
-      )
-      await handle.agent.whenIdle()
+
+      // 流式订阅：过滤本会话的 session/event，映射高信号中间事件实时回调。
+      // assistant/chunk 按 block index 缓冲 text/reasoning delta，block-end 才 emit（整块）。
+      const textBuf: Record<number, string> = {}
+      const thoughtBuf: Record<number, string> = {}
+      const callNames = new Map<string, string>()
+      const dispose = this.ctx.on('session/event', (session, event) => {
+        const sid = (session as { header?: { id?: unknown }; id?: unknown }).header?.id
+          ?? (session as { id?: unknown }).id
+        if (String(sid) !== String(sessionId)) return
+        const ev = event as { type?: string; data?: {
+          turn?: number
+          step?: number
+          name?: string
+          arguments?: string
+          callId?: string
+          reason?: { kind?: string }
+          chunk?: { type?: string; blockType?: string; index?: number; text?: string; block?: { type?: string } }
+          message?: { content?: { type?: string; text?: string; toolCallId?: string; content?: { type?: string; text?: string }[] }[] }
+        } }
+        const data = ev.data ?? {}
+        switch (ev.type) {
+          case 'assistant/chunk': {
+            const chunk = data.chunk
+            if (chunk === undefined || chunk.index === undefined) return
+            if (chunk.type === 'block-start') {
+              if (chunk.blockType === 'text') textBuf[chunk.index] = ''
+              else if (chunk.blockType === 'reasoning') thoughtBuf[chunk.index] = ''
+            } else if (chunk.type === 'text-delta') {
+              if (textBuf[chunk.index] !== undefined) textBuf[chunk.index] += chunk.text ?? ''
+              else if (thoughtBuf[chunk.index] !== undefined) thoughtBuf[chunk.index] += chunk.text ?? ''
+            } else if (chunk.type === 'reasoning-delta') {
+              if (thoughtBuf[chunk.index] !== undefined) thoughtBuf[chunk.index] += chunk.text ?? ''
+            } else if (chunk.type === 'block-end') {
+              const t = textBuf[chunk.index]
+              delete textBuf[chunk.index]
+              if (chunk.block?.type === 'text' && t !== undefined && t.length > 0) {
+                onEvent({ kind: 'text', turn: data.turn, step: data.step, text: t })
+              }
+              const th = thoughtBuf[chunk.index]
+              delete thoughtBuf[chunk.index]
+              if (chunk.block?.type === 'reasoning' && th !== undefined && th.length > 0) {
+                onEvent({ kind: 'thinking', turn: data.turn, step: data.step, text: th })
+              }
+            }
+            return
+          }
+          case 'turn/start':
+            onEvent({ kind: 'turn_start', turn: data.turn, step: data.step })
+            return
+          case 'turn/end':
+            onEvent({ kind: 'turn_end', turn: data.turn, step: data.step, reason: data.reason?.kind })
+            return
+          case 'tool/call':
+            if (data.callId !== undefined && data.name !== undefined) callNames.set(data.callId, data.name)
+            onEvent({ kind: 'tool_call', turn: data.turn, step: data.step, name: data.name, arguments: data.arguments })
+            return
+          case 'tool/result': {
+            // tool/result 不带 name（在 tool/call 里）；结果文本嵌在 tool-result 块
+            // message.content[0].content[0].text；用 toolCallId 关联名称
+            const block = data.message?.content?.[0]
+            const toolCallId = block?.toolCallId
+            onEvent({
+              kind: 'tool_result',
+              turn: data.turn,
+              step: data.step,
+              name: toolCallId !== undefined ? callNames.get(toolCallId) : undefined,
+              text: block?.content?.[0]?.text,
+            })
+            return
+          }
+          default:
+            return
+        }
+      })
+
+      try {
+        handle.agent.followup(
+          createUserMessage({
+            content: [{ type: 'text', text }],
+            source: { kind: 'plugin', plugin: 'dsh-a2a-server' },
+          }),
+        )
+        await handle.agent.whenIdle()
+      } finally {
+        dispose()
+      }
 
       // 读本次任务的最终 assistant 文本
       const log = ((handle.agent.session as unknown as { log?: unknown[] }).log ?? []).slice(baseline)
@@ -447,6 +636,7 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
   if (config.preset) runtimeConfig.preset = config.preset
   if (config.authToken) runtimeConfig.authToken = config.authToken
   if (config.cwd) runtimeConfig.cwd = config.cwd
+  if (config.contextMapTtlDays !== undefined) runtimeConfig.contextMapTtlDays = config.contextMapTtlDays
   // 运行配置也可从环境读（覆盖 cordis 配置之外的最简通道）
   if (process.env.A2A_SERVER_TOKEN) runtimeConfig.authToken = process.env.A2A_SERVER_TOKEN
 

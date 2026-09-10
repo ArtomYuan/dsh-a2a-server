@@ -3,10 +3,11 @@
 dsh 侧的 A2A (Agent2Agent) server 插件库：把 dsh agent 会话以 A2A 协议暴露给
 远端 agent（如 Hermes），实现「Hermes = brain，dsh = arms」的互操作。
 
-> 状态：**P1 contextId 会话映射 + agent-team 挂载**。A2A server 业务逻辑已落地
+> 状态：**P2a 流式中间事件 + 映射清理**。A2A server 业务逻辑已落地
 > （node:http + Bearer 认证 + `@a2a-js/sdk` JsonRpcTransportHandler + AgentExecutor
-> → dsh 会话同步执行）；`message.contextId` 映射到 dsh 会话（复用 + 跨重启 resume），
-> `preset` 可配置（含 agent-team）。P0/P1 闭环验证通过后已推 GitHub。
+> → dsh 会话同步执行）；`message.contextId` 映射到 dsh 会话（复用 + 跨重启 resume）；
+> `preset` 可配置（含 agent-team）；`SendStreamingMessage` 实时推思考/工具/状态/文本
+> 中间事件；contextMap 带 TTL 清理。
 
 ## 安装
 
@@ -71,11 +72,11 @@ A2A server 暴露两个端点（JSON-RPC binding，协议版本 `1.0`）：
 - `GET /.well-known/agent-card.json`：公开的 agent card（JSON）。含
   `supportedInterfaces[].protocolBinding = "JSONRPC"`、`protocolVersion = "1.0"`、
   `capabilities.streaming = true`。
-- `POST /`：JSON-RPC。最小闭环用 `method: "SendMessage"`，`params.message`
-  携带用户文本消息；服务端 `AgentExecutor` 把文本投给 dsh agent 会话同步执行，
-  最终输出作为 artifact（`lastChunk: true`）返回，任务状态流为
-  `submitted → working → completed`。流式方法 `SendStreamingMessage` /
-  `SubscribeToTask` 以 SSE 返回。
+- `POST /`：JSON-RPC。`method: "SendMessage"`（阻塞）携带用户文本消息，服务端
+  `AgentExecutor` 把文本投给 dsh agent 会话同步执行，最终输出作为 artifact
+  （`lastChunk: true`）返回，任务状态流为 `submitted → working → completed`。
+  `method: "SendStreamingMessage"`（流式）同参数，但以 SSE 逐步推送中间事件
+  （见下「流式中间事件」）。
 
 认证：配置 `authToken` 后，所有请求必须带 `Authorization: Bearer <token>`，
 否则 `401`。
@@ -83,13 +84,26 @@ A2A server 暴露两个端点（JSON-RPC binding，协议版本 `1.0`）：
 **contextId 会话映射**：`params.message.contextId`（Hermes 由 origin 派生）映射
 到 dsh 会话——同 contextId 复用同一 dsh 会话（上下文连续），异 contextId 隔离；
 映射持久化到 `$DSH_HOME/storages/a2a-context-map.json`（格式
-`contextId\0cwd → sessionId`），server 重启后同 contextId 经 `ctx.agents.resume`
-续接。缺 contextId 时 server 生成随机 contextId（等于每次新建，不复用）。
+`contextId\0cwd → {sessionId, lastUsedAt}`），server 重启后同 contextId 经
+`ctx.agents.resume` 续接；条目按 `lastUsedAt` 做 TTL 清理（默认 7 天）。缺
+contextId 时 server 生成随机 contextId（等于每次新建，不复用）。
+
+**流式中间事件**：`SendStreamingMessage` 下，DshAgentExecutor 订阅 dsh agent 的
+`session/event`，把高信号中间事件实时推为 A2A 流式事件——
+
+- 文本块 → `artifactUpdate`（text Part，`artifactId: "stream-text"`、`append: true`）；
+- 思考（reasoning）、工具调用/结果、turn 边界 → `artifactUpdate`（**data Part
+  私有扩展**，`mediaType: application/json`，值为 JSON 描述符）。
+
+data Part 描述符 `kind` 取值：`thinking`（`{text}`）、`tool_call`
+（`{name, arguments}`）、`tool_result`（`{name, text}`）、`turn_start` /
+`turn_end`（`{turn, step, reason?}`）。测试期思考原样透传以便验证。
 
 ### 事件
 
-当前只实现同步任务往返（task → statusUpdate → artifact → statusUpdate），
-暂不向客户端推送思考 / 工具 / 文本 / 进度中间事件流；流式事件推送留后续阶段。
+同步任务（`SendMessage`）返回 task → statusUpdate → artifact → statusUpdate。
+流式任务（`SendStreamingMessage`）额外实时推送思考 / 工具 / 状态 / 文本中间事件
+（见「流式中间事件」），最终 artifact 完成。
 
 ### 扩展点 / 配置
 
@@ -104,6 +118,7 @@ A2A server 暴露两个端点（JSON-RPC binding，协议版本 `1.0`）：
 - `cwd`：任务工作目录（默认进程 cwd）。
 - `contextMapPath`：contextId→session 映射持久文件路径（默认
   `$DSH_HOME/storages/a2a-context-map.json`）。
+- `contextMapTtlDays`：映射条目 TTL 天数（默认 7；超期条目在加载/写入时清理）。
 
 注入依赖：`agents`、`agentPresets`、`sessions`。
 
@@ -158,10 +173,12 @@ agent-team-profile bundle 的 `cordis.patch.yml` + web-app 的 host 行）：
 
 ### 设计说明
 
-- 会话语义（P1）：A2A `message.contextId` ↔ dsh 会话。同 contextId 复用同一
-  dsh 会话（上下文连续），异 contextId 隔离；两级接管（持久映射命中 → resume，
-  未命中 → 新建 + 写映射），映射持久化跨重启 resume。任务毕 flush + 释放句柄。
-- 流式粒度：同步任务往返（阻塞式 `SendMessage`），不推中间事件流。
+- 会话语义：A2A `message.contextId` ↔ dsh 会话。同 contextId 复用同一 dsh 会话
+  （上下文连续），异 contextId 隔离；两级接管（持久映射命中 → resume，未命中 →
+  新建 + 写映射），映射持久化跨重启 resume，带 TTL 清理（默认 7 天）。任务毕
+  flush + 释放句柄。
+- 流式粒度：阻塞式 `SendMessage` 返回最终结果；`SendStreamingMessage` 实时推
+  思考/工具/状态/文本中间事件（text Part + data Part 私有扩展）。
 - 传输选型：JSON-RPC over node:http（自建 listener，非 express）；agent card
   走 `/.well-known/agent-card.json` 公开端点。
 
