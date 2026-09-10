@@ -1,23 +1,15 @@
-# dsh-a2a-server bundle patch: inserts the A2A server plugin and its service
-# dependency (the agent-preset roster) over a dsh-base composition. dsh-base
-# provides the agent spine (ctx.agents), an LLM adapter, and the session
-# surface, but NOT the agent-presets row — this bundle declares it (mirroring
-# dsh-acp-enhanced) so `ctx.agentPresets` resolves in a base-only profile.
+# dsh-a2a-server bundle patch: inserts the A2A server plugin over a dsh-base
+# composition. dsh-base provides the agent spine (ctx.agents), an LLM adapter,
+# and the session surface.
 #
 # `id` is the stable logical row id in the composed cordis.yml; `name` is the
 # npm package name the Loader resolves (this package).
+#
+# NOTE: this bundle deliberately does NOT insert the `agent-presets` row. That
+# row is already provided by full profiles (the web-app bundle inserts it) and
+# by the dsh-acp-enhanced bundle; inserting it again here would duplicate the
+# entry id and fail the load. dsh-base-only profiles that need `ctx.agentPresets`
+# must add the `agent-presets` row themselves in their profile patch layer.
 - insert:
-    # The agent-preset roster: `ctx.agentPresets`, the service the A2A executor
-    # composes each session's model-facing world from. No `roots` here — the dsh
-    # CLI's profile-boot overlays its shipped `config/agent-presets/` directory
-    # (standard/minimal/cordis, system trust) onto this row whenever a
-    # composition carries it. Deployments whose source tree lacks that overlay
-    # (e.g. the A-machine test tree) set `roots` explicitly in the profile
-    # patch layer (see the a2a-test profile).
-    - id: agent-presets
-      name: '@deepseek-ai/dsh-agent-presets'
-      config:
-        default: standard
-
     - id: a2a-server
       name: dsh-a2a-server

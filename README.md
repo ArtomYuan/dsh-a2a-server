@@ -57,8 +57,9 @@ dsh plugin --profile <name> remove dsh-a2a-server
 ## 包结构（bundle）
 
 - `package.json`：`dsh.bundle.patch` 声明 + `@deepseek-ai/cordis` peer/dev 镜像。
-- `cordis.patch.yml`：patch 条目数组，`insert` 一条 agent-presets 行（服务依赖）
-  与一条 A2A server 插件行。
+- `cordis.patch.yml`：patch 条目数组，`insert` 一条 A2A server 插件行。**不**
+  `insert` `agent-presets` 行（完整 profile 的 web-app bundle 已提供，重复插入会
+  duplicate entry id 加载失败）；dsh-base-only profile 需自行补 `agent-presets` 行。
 - `src/index.ts`：插件入口（`name` / `inject` / `apply`）。
 - `tsdown.prepare.config.ts`：git 安装时 `prepare` 的自包含转译配置（转译
   `src/` → `lib/`，不做项目引用、不做类型检查）。
@@ -128,9 +129,16 @@ data Part 描述符 `kind` 取值：`thinking`（`{text}`）、`tool_call`
 host 服务 `subagent-model-selection-settings`）与九个 Team 工具（来自
 `@deepseek-ai/dsh-experimental-agent-team-profile` bundle）。dsh-base-only 的
 独立 profile 缺这些 host 行，须在 profile 的 cordis 树补上（等价于
-agent-team-profile bundle 的 `cordis.patch.yml` + web-app 的 host 行）：
+agent-team-profile bundle 的 `cordis.patch.yml` + web-app 的 host 行）。dsh-base
+也不提供 `agent-presets` 行，须一并 insert（完整 profile 的 web-app 已提供，
+重复会 duplicate entry id）：
 
 ```yaml
+- insert:
+    - id: agent-presets
+      name: '@deepseek-ai/dsh-agent-presets'
+      config:
+        default: minimal
 - id: tool-subagent-control
   disabled: true
 - id: tool-subagent-list-agents
