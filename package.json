@@ -1,0 +1,47 @@
+{
+  "name": "dsh-a2a-server",
+  "version": "0.1.2-rc.1",
+  "description": "A2A (Agent2Agent) server bundle for DeepSeek Harness: exposes dsh agent sessions over the A2A protocol so remote agents (e.g. Hermes) can interoperate with a dsh profile.",
+  "keywords": [
+    "deepseek-harness",
+    "dsh-plugin",
+    "a2a",
+    "agent2agent",
+    "cordis",
+    "ai-agent"
+  ],
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "src",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "packageManager": "pnpm@11.7.0",
+  "scripts": {
+    "prepare": "tsdown --config tsdown.prepare.config.ts"
+  },
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "tsdown": "^0.22.2",
+    "typescript": "^6.0.3"
+  }
+}

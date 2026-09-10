@@ -1,0 +1,14 @@
+# dsh-a2a-server bundle patch: inserts the A2A server plugin over a dsh-base
+# composition that provides the agent spine (ctx.agents), an LLM adapter, and
+# the session surface the server exposes.
+#
+# Official install (auto-initializes the profile, auto-appends this package to
+# the profile's bundle layers — no manual patch writing):
+#   dsh plugin --profile <name> add "github:ArtomYuan/dsh-a2a-server#<commit>"
+#
+# `id` is the stable logical row id in the composed cordis.yml; `name` is the
+# npm package name the Loader resolves (this package). P-1 pins names only —
+# the A2A server implementation lands in P0.
+- insert:
+    - id: a2a-server
+      name: dsh-a2a-server
