@@ -1,5 +1,7 @@
 # dsh-a2a-server
 
+[English](README.en.md) | **简体中文**
+
 dsh 侧的 A2A (Agent2Agent) server 插件库：把 dsh agent 会话以 A2A 协议暴露给
 远端 agent（如 Hermes），实现「Hermes = brain，dsh = arms」的互操作。
 
