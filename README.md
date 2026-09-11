@@ -11,6 +11,13 @@ dsh 侧的 A2A (Agent2Agent) server 插件库：把 dsh agent 会话以 A2A 协�
 > `preset` 可配置（含 agent-team）；`SendStreamingMessage` 实时推思考/工具/状态/文本
 > 中间事件；contextMap 带 TTL 清理。
 
+## 配合 hermes-a2a-bridge 的直播效果
+
+本库负责在 dsh 侧暴露 A2A server 与流式中间事件；**客户端侧的直播呈现**
+（工具命令 / 执行结果 / 最终文本的代码框渲染、进度推送到飞书 / QQ）由
+[hermes-a2a-bridge](https://github.com/ArtomYuan/hermes-a2a-bridge) 负责，实际
+效果见其 README 的「效果展示」章节。
+
 ## 安装
 
 本库是独立公开 bundle 包（非 dsh workspace 内包），以 standalone bundle 形态

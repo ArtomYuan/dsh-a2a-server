@@ -14,6 +14,14 @@ A server plugin library that exposes dsh agent sessions through the A2A
 > pushes thinking / tool / status / text intermediate events in real time; the
 > contextMap performs TTL cleanup.
 
+## Live preview with hermes-a2a-bridge
+
+This library exposes the A2A server and streaming intermediate events on the dsh
+side; the **client-side live presentation** (code-block rendering of tool
+commands / execution results / final text, and progress pushed to Feishu / QQ) is
+handled by [hermes-a2a-bridge](https://github.com/ArtomYuan/hermes-a2a-bridge).
+See its README "Preview" section for the actual effect.
+
 ## Installation
 
 This library is an independent public bundle package (not a package inside the
