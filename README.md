@@ -197,9 +197,13 @@ agent-team-profile bundle 的 `cordis.patch.yml` + web-app 的 host 行）。dsh
 - 插件 role：`Executor`（对应 A2A `AgentExecutor` 映射，把 A2A task 文本投给
   dsh agent 会话执行）。
 
-## License
+## License & Attribution
 
-MIT（暂定，与上游生态一致；最终许可以管理员确认为准）。见 `LICENSE`。
+本项目以 GNU General Public License v3.0（GPL-3.0）分发，全文见 `LICENSE`。
+
+部分实现（agent 会话接管 / agentLocks / origin-map 会话复用模式）移植自
+[chushixixin/dsh-harness-mcp-server](https://github.com/chushixixin/dsh-harness-mcp-server)
+（MIT License，Copyright chushixixin）。原 MIT 版权声明保留，按 MIT 条款再许可纳入本项目。
 
 ## 开发
 

@@ -32,7 +32,7 @@
     "build": "tsdown --config tsdown.prepare.config.ts",
     "typecheck": "tsc --noEmit"
   },
-  "license": "MIT",
+  "license": "GPL-3.0",
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
