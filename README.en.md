@@ -8,11 +8,77 @@ A server plugin library that exposes dsh agent sessions through the A2A
 
 ## Preview
 
-This library exposes the A2A server and streaming intermediate events on the dsh
-side; the **client-side live presentation** (code-block rendering of tool
-commands / execution results / final text, and progress pushed to Feishu / QQ) is
-handled by [hermes-a2a-bridge](https://github.com/ArtomYuan/hermes-a2a-bridge).
-See its README "Preview" section for the actual effect.
+The following effects are driven by this library's A2A server and streaming
+events; client-side rendering is done by
+[hermes-a2a-bridge](https://github.com/ArtomYuan/hermes-a2a-bridge) (code-block
+rendering of tool commands / execution results / final text, and progress pushed
+to Feishu / QQ).
+
+### Live stream
+
+When a dsh task is submitted, the client consumes the SSE stream and pushes
+intermediate progress back to the messaging surface in real time. The live
+sequence a user sees in Feishu / QQ looks like this (commands and results are
+rendered as code blocks):
+
+```
+🚀 开始执行
+🧠 思考中…
+🔧 `bash`                    <- tool call, command in a code block
+    ┌─ ```bash
+    │  ls -la /tmp
+    └─ ```
+📋 `bash` 完成               <- tool result, output in a code block
+    ┌─ ```
+    │  total 4
+    │  drwxrwxrwt  2 root root 40 Sep 11 14:00 .
+    └─ ```
+📖 输出完成                  <- long result rendered as a code block
+✅ 完成
+```
+
+Long text exceeding the gateway's per-message limit is split at code-block
+boundaries; continuation chunks are joined with a `⏩ 续` marker, so code blocks
+never break across chunks.
+
+### Code blocks
+
+Operation content — tool commands, execution results, and final text — is
+automatically rendered as code blocks:
+
+- **Feishu**: fenced content triggers post rich text; code blocks are scrollable;
+- **QQ / other mainstream gateways**: markdown code blocks render as code blocks;
+- **plain-text platforms**: automatically degraded to plain text (no garbling).
+
+Sample code-block content (an `ls -la` output block):
+
+```text
+total 4
+drwxrwxrwt  2 root root 40 Sep 11 14:00 .
+drwxrwxrwt  2 root root 40 Sep 11 14:00 ..
+-rw-r--r--  1 root root  0 Sep 11 14:00 demo.txt
+```
+
+> Actual rendering depends on each gateway's client.
+
+### Event stream
+
+The streaming event form produced by this library (under
+`SendStreamingMessage`: text Part + data Part private extension; fields taken from
+the source `StreamEventDescriptor`):
+
+```
+artifactUpdate  artifactId: "stream-text"  append: true         <- text chunk, text Part
+artifactUpdate  artifactId: <uuid>  mediaType: application/json  <- intermediate event, data Part
+  kind: "tool_call"    { turn, step, name, arguments }
+  kind: "tool_result"  { turn, step, name, text }
+  kind: "thinking"     { turn, step, text }
+  kind: "turn_start"   { turn, step }
+  kind: "turn_end"     { turn, step, reason? }
+statusUpdate   submitted → working → completed
+```
+
+See [CONFIGURATION.en.md](CONFIGURATION.en.md) for full fields and mechanics.
 
 ## Architecture
 
