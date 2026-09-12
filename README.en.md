@@ -118,6 +118,13 @@ workspace), distributed as a standalone bundle.
 
    The `token` must match Hermes-side `a2a_agents.dsh.auth.token`.
 
+3. Restart dsh to load the new plugin (how depends on your dsh deployment):
+
+   ```bash
+   # Example: user-level systemd service
+   systemctl --user restart dsh
+   ```
+
 ## Links
 
 - Detailed configuration and mechanics: [CONFIGURATION.en.md](CONFIGURATION.en.md)

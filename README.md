@@ -107,6 +107,13 @@ statusUpdate   submitted → working → completed
 
    `token` 需与 Hermes 侧 `a2a_agents.dsh.auth.token` 一致。
 
+3. 重启 dsh 以加载新插件（方式取决于你的 dsh 部署）：
+
+   ```bash
+   # 示例：systemd 用户级服务
+   systemctl --user restart dsh
+   ```
+
 ## 链接
 
 - 详细配置与机制说明：[CONFIGURATION.md](CONFIGURATION.md)
