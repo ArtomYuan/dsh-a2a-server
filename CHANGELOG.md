@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+（暂无未发布变更）
+
+## [0.1.0] - 2026-09-12
+
 ### Added
 
 - A2A server 初始实现：JSON-RPC over node:http，`@a2a-js/sdk`
