@@ -82,19 +82,7 @@ See [CONFIGURATION.en.md](CONFIGURATION.en.md) for full fields and mechanics.
 
 ## Architecture
 
-```
-A2A client (e.g. Hermes)
-        │  JSON-RPC over node:http
-        ▼
-dsh-a2a-server
-   ├─ GET /.well-known/agent-card.json   (agent card)
-   ├─ POST /（SendMessage / SendStreamingMessage）
-   ├─ Bearer auth (authToken)
-   └─ AgentExecutor → session mapping (contextId)
-        │
-        ▼
-dsh agent session (execute / reuse / resume across restart)
-```
+![Architecture](assets/architecture-en.png)
 
 ## Installation
 

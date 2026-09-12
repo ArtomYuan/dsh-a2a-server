@@ -74,19 +74,7 @@ statusUpdate   submitted → working → completed
 
 ## 流程图
 
-```
-A2A 客户端（如 Hermes）
-        │  JSON-RPC over node:http
-        ▼
-dsh-a2a-server
-   ├─ GET /.well-known/agent-card.json   （agent card）
-   ├─ POST /（SendMessage / SendStreamingMessage）
-   ├─ Bearer 认证（authToken）
-   └─ AgentExecutor → 会话映射（contextId）
-        │
-        ▼
-dsh agent 会话（执行 / 复用 / 跨重启 resume）
-```
+![架构图](assets/architecture-zh.png)
 
 ## 安装说明
 
