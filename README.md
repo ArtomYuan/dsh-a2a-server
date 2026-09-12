@@ -76,6 +76,17 @@ statusUpdate   submitted → working → completed
 
 ![架构图](assets/architecture-zh.png)
 
+## 与 hermes-a2a-bridge 的关系
+
+本库暴露标准 A2A 接口，不依赖任何特定客户端——其他 A2A 客户端可直接调用。
+Hermes 用户如需完整体验（过程直播 / 会话连续性 / 单执行），可搭配
+[hermes-a2a-bridge](https://github.com/ArtomYuan/hermes-a2a-bridge)。两库非强绑定，按需组合：
+
+| 组合 | 能实现 |
+| --- | --- |
+| 只用本库 | 标准 A2A 接口，任意 A2A 客户端可直接调用 |
+| 搭配 hermes-a2a-bridge | 完整体验：任务投递 + 过程直播 + 会话连续性 + 单执行 |
+
 ## 安装说明
 
 本库是独立公开 bundle 包（非 dsh workspace 内包），以 standalone bundle 形态分发。

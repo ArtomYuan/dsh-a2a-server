@@ -84,6 +84,19 @@ See [CONFIGURATION.en.md](CONFIGURATION.en.md) for full fields and mechanics.
 
 ![Architecture](assets/architecture-en.png)
 
+## Relationship with hermes-a2a-bridge
+
+This library exposes a standard A2A interface and does not depend on any specific
+client — other A2A clients can call it directly. Hermes users who want the full
+experience (live progress / session continuity / single execution) can pair it with
+[hermes-a2a-bridge](https://github.com/ArtomYuan/hermes-a2a-bridge). The two libraries
+are not hard-bound; combine them as needed:
+
+| Combination | What you get |
+| --- | --- |
+| This library only | A standard A2A interface callable by any A2A client |
+| With hermes-a2a-bridge | Full experience: task submission + live progress + session continuity + single execution |
+
 ## Installation
 
 This library is an independent public bundle package (not a package inside the dsh
