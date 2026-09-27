@@ -125,6 +125,48 @@ Hermes 用户如需完整体验（过程直播 / 会话连续性 / 单执行）�
    systemctl --user restart dsh
    ```
 
+## 设置面板
+
+dsh Web UI「设置 → 插件 → Plugin configuration」会自动出现 `a2a-server` 设置卡片，
+只要该插件被 profile 组合即可，无需改 dsh 仓库、无需白名单。实现走 dsh 官方
+settings 能力：host 侧注册 settings 命名空间 `a2a-server`（schema 由 schemastery
+定义），浏览器侧提供一张设置卡。
+
+### 配置分层
+
+- `cordis.patch.yml` 里的插件 `config` 仍是 composition（base）层与事实源；
+- 面板上的修改写入 dsh 用户设置文档 `$DSH_HOME/settings.yaml`，作为**用户覆盖层**；
+- 解析顺序：schema 默认值 < `cordis.patch.yml` < 用户覆盖。
+
+面板会标出哪些字段被用户层覆盖，并提供「清除覆盖」回落到 `cordis.patch.yml` 的值。
+
+### 字段与生效时机
+
+| 字段 | 生效时机 |
+| --- | --- |
+| `provider` / `model` / `preset` / `cwd` / `authToken` / `contextMapTtlDays` | 保存后下一次 A2A 请求即生效（无需重启） |
+| `port` / `host` / `contextMapPath` | 保存后需重启 dsh（或重新加载 profile）才生效；当前运行实例仍监听启动时的地址 |
+
+- `model` 留空（空串）= 跟随 dsh 当前默认模型；`cwd` 留空 = `process.cwd()`；
+  `port` 留空 = 启动时自动探测可用端口。
+
+### 凭据（authToken）
+
+- 面板上只写不回显（永远显示「已设置 / 未设置」，输入框空起始；空白输入 =
+  不修改）。
+- 「清除覆盖」只删除用户层覆盖并回落到 `cordis.patch.yml` 的既有令牌，绝不
+  静默关闭鉴权。
+- 最终解析值为空时面板显性警示「未设置 = 无鉴权（危险）」。
+- 环境变量 `A2A_SERVER_TOKEN` 优先级高于配置，此时面板显示「由环境变量接管」
+  而不可编辑。
+
+### 降级
+
+settings 服务不存在时插件照常工作，只使用 `cordis.patch.yml` 的配置。
+
+安装无需额外步骤：`link:` 或正常安装后重启 dsh 即可；发布物同时包含 host 产物
+`lib/` 与浏览器产物 `client/`，从 git 安装由 `prepare` 脚本自动构建两半。
+
 ## 链接
 
 - 详细配置与机制说明：[CONFIGURATION.md](CONFIGURATION.md)

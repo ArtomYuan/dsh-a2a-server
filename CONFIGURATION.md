@@ -65,7 +65,8 @@ dsh plugin --profile <name> remove dsh-a2a-server
 
 A2A server 暴露两个端点（JSON-RPC binding，协议版本 `1.0`）：
 
-- `GET /.well-known/agent-card.json`：公开的 agent card（JSON）。含
+- `GET /.well-known/agent-card.json`：agent card（JSON；认证检查在所有路由之前，
+  配置 `authToken` 后此端点同样需要 Bearer 令牌）。含
   `supportedInterfaces[].protocolBinding = "JSONRPC"`、`protocolVersion = "1.0"`、
   `capabilities.streaming = true`。
 - `POST /`：JSON-RPC。`method: "SendMessage"`（阻塞）携带用户文本消息，服务端
@@ -121,6 +122,58 @@ data Part 描述符 `kind` 取值：`thinking`（`{text}`）、`tool_call`
 - `contextMapTtlDays`：映射条目 TTL 天数（默认 7；超期条目在加载/写入时清理）。
 
 注入依赖：`agents`、`agentPresets`、`sessions`。
+
+## 设置面板
+
+dsh Web UI「设置 → 插件 → Plugin configuration」会自动出现 `a2a-server` 设置卡片，
+只要该插件被 profile 组合即可，无需改 dsh 仓库、无需白名单。实现走 dsh 官方
+settings 能力：host 侧注册 settings 命名空间 `a2a-server`（schema 由 schemastery
+定义），浏览器侧提供一张设置卡。
+
+### 配置分层
+
+- `cordis.patch.yml` 里的插件 `config` 仍是 composition（base）层与事实源；
+- 面板上的修改写入 dsh 用户设置文档 `$DSH_HOME/settings.yaml`，作为**用户覆盖层**；
+- 解析顺序：schema 默认值 < `cordis.patch.yml` < 用户覆盖。
+
+面板会标出哪些字段被用户层覆盖，并提供「清除覆盖」回落到 `cordis.patch.yml` 的值。
+
+### 字段与生效时机
+
+| 字段 | 默认 / 空值语义 | 生效时机 |
+| --- | --- | --- |
+| `port` | 留空 = 启动时自动探测可用端口 | 需重启 dsh（或重新加载 profile） |
+| `host` | 非空（受校验） | 需重启 dsh（或重新加载 profile） |
+| `authToken` | secret 字段，只写不回显 | 下一次 A2A 请求（无需重启） |
+| `provider` | 默认 `deepseek-official` | 下一次 A2A 请求（无需重启） |
+| `model` | 默认 `deepseek-v4-flash`；空串 = 跟随 dsh 当前默认模型 | 下一次 A2A 请求（无需重启） |
+| `preset` | 默认 `standard` | 下一次 A2A 请求（无需重启） |
+| `cwd` | 空串 = `process.cwd()` | 下一次 A2A 请求（无需重启） |
+| `contextMapPath` | 留空 = `$DSH_HOME/storages/a2a-context-map.json` | 需重启 dsh（或重新加载 profile） |
+| `contextMapTtlDays` | 默认 7 | 下一次落盘清理（无需重启） |
+
+`port` / `host` / `contextMapPath` 保存后，当前运行实例仍监听启动时的地址，直到重启
+dsh（或重新加载 profile）才生效。
+
+### 凭据（authToken）
+
+- 面板上只写不回显（永远显示「已设置 / 未设置」，输入框空起始；空白输入 =
+  不修改）。
+- 「清除覆盖」只删除用户层覆盖并回落到 `cordis.patch.yml` 的既有令牌，绝不
+  静默关闭鉴权。
+- 最终解析值为空时面板显性警示「未设置 = 无鉴权（危险）」。
+- 环境变量 `A2A_SERVER_TOKEN` 优先级高于配置，此时面板显示「由环境变量接管」
+  而不可编辑。
+
+### 降级
+
+settings 服务不存在时插件照常工作，只使用 `cordis.patch.yml` 的配置；该 profile
+中不出现设置卡片。
+
+### 安装与构建
+
+无需额外安装步骤：`link:` 或正常安装后重启 dsh 即可。发布物同时包含 host 产物
+`lib/` 与浏览器产物 `client/`；从 git 安装由 `prepare` 脚本自动构建两半。
 
 ## agent-team 挂载（部署说明）
 
@@ -187,7 +240,7 @@ agent-team-profile bundle 的 `cordis.patch.yml` + web-app 的 host 行）。dsh
 - 流式粒度：阻塞式 `SendMessage` 返回最终结果；`SendStreamingMessage` 实时推
   思考/工具/状态/文本中间事件（text Part + data Part 私有扩展）。
 - 传输选型：JSON-RPC over node:http（自建 listener，非 express）；agent card
-  走 `/.well-known/agent-card.json` 公开端点。
+  走 `/.well-known/agent-card.json` 端点（同样受 Bearer 认证保护）。
 
 ## 命名
 

@@ -138,6 +138,57 @@ workspace), distributed as a standalone bundle.
    systemctl --user restart dsh
    ```
 
+## Settings panel
+
+The dsh Web UI "Settings → Plugins → Plugin configuration" automatically shows an
+`a2a-server` settings card as soon as the plugin is included in the profile — no
+changes to the dsh repository and no whitelist are required. It is implemented on
+the official dsh settings seam: the host side registers the `a2a-server` settings
+namespace (schema defined by schemastery), and the browser side provides a settings
+card.
+
+### Configuration layering
+
+- The plugin `config` in `cordis.patch.yml` remains the composition (base) layer and
+  source of truth;
+- Edits made in the panel are written to the dsh user settings document
+  `$DSH_HOME/settings.yaml`, as the **user override layer**;
+- Resolution order: schema defaults < `cordis.patch.yml` < user overrides.
+
+The panel marks which fields are overridden by the user layer and offers "Clear
+override" to fall back to the value in `cordis.patch.yml`.
+
+### Fields and effective timing
+
+| Field | Effective timing |
+| --- | --- |
+| `provider` / `model` / `preset` / `cwd` / `authToken` / `contextMapTtlDays` | Takes effect on the next A2A request after saving (no restart) |
+| `port` / `host` / `contextMapPath` | Requires a dsh restart (or profile reload); the running instance keeps listening on the startup address |
+
+- Empty `model` (empty string) = follow the dsh current default model; empty `cwd` =
+  `process.cwd()`; empty `port` = auto-probe a free port at startup.
+
+### Credentials (authToken)
+
+- The panel is write-only for `authToken` (always shows "Set / Not set", input starts
+  empty; a blank input = no change).
+- "Clear override" only removes the user-layer override and falls back to the existing
+  token in `cordis.patch.yml`; it never silently disables auth.
+- When the final resolved value is empty, the panel explicitly warns "Not set = no
+  auth (dangerous)".
+- The `A2A_SERVER_TOKEN` environment variable takes precedence over configuration; in
+  that case the panel shows "managed by environment variable" and is not editable.
+
+### Degradation
+
+When the settings service is absent the plugin keeps working, using only the
+`cordis.patch.yml` configuration.
+
+No extra install steps: `link:` or a normal install followed by a dsh restart is
+enough. The published artifact ships both the host output `lib/` and the browser
+output `client/`; git installs build both halves automatically via the `prepare`
+script.
+
 ## Links
 
 - Detailed configuration and mechanics: [CONFIGURATION.en.md](CONFIGURATION.en.md)

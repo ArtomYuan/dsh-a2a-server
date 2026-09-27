@@ -74,7 +74,9 @@ dsh plugin --profile <name> remove dsh-a2a-server
 
 The A2A server exposes two endpoints (JSON-RPC binding, protocol version `1.0`):
 
-- `GET /.well-known/agent-card.json`: the public agent card (JSON). Contains
+- `GET /.well-known/agent-card.json`: the agent card (JSON; the auth check runs
+  before any routing, so once `authToken` is set this endpoint also requires a
+  Bearer token). Contains
   `supportedInterfaces[].protocolBinding = "JSONRPC"`, `protocolVersion = "1.0"`,
   `capabilities.streaming = true`.
 - `POST /`: JSON-RPC. `method: "SendMessage"` (blocking) carries the user text
@@ -142,6 +144,66 @@ environment variable `A2A_SERVER_TOKEN`):
   cleaned on load/write).
 
 Injected dependencies: `agents`, `agentPresets`, `sessions`.
+
+## Settings panel
+
+The dsh Web UI "Settings → Plugins → Plugin configuration" automatically shows an
+`a2a-server` settings card as soon as the plugin is included in the profile — no
+changes to the dsh repository and no whitelist are required. It is implemented on
+the official dsh settings seam: the host side registers the `a2a-server` settings
+namespace (schema defined by schemastery), and the browser side provides a settings
+card.
+
+### Configuration layering
+
+- The plugin `config` in `cordis.patch.yml` remains the composition (base) layer and
+  source of truth;
+- Edits made in the panel are written to the dsh user settings document
+  `$DSH_HOME/settings.yaml`, as the **user override layer**;
+- Resolution order: schema defaults < `cordis.patch.yml` < user overrides.
+
+The panel marks which fields are overridden by the user layer and offers "Clear
+override" to fall back to the value in `cordis.patch.yml`.
+
+### Fields and effective timing
+
+| Field | Default / empty-value semantics | Effective timing |
+| --- | --- | --- |
+| `port` | Empty = auto-probe a free port at startup | Requires a dsh restart (or profile reload) |
+| `host` | Non-empty (validated) | Requires a dsh restart (or profile reload) |
+| `authToken` | Secret field, write-only | Next A2A request (no restart) |
+| `provider` | Default `deepseek-official` | Next A2A request (no restart) |
+| `model` | Default `deepseek-v4-flash`; empty string = follow the dsh current default model | Next A2A request (no restart) |
+| `preset` | Default `standard` | Next A2A request (no restart) |
+| `cwd` | Empty string = `process.cwd()` | Next A2A request (no restart) |
+| `contextMapPath` | Empty = `$DSH_HOME/storages/a2a-context-map.json` | Requires a dsh restart (or profile reload) |
+| `contextMapTtlDays` | Default 7 | Next flush cleanup (no restart) |
+
+After saving `port` / `host` / `contextMapPath`, the running instance keeps listening
+on the startup address until dsh is restarted (or the profile reloaded).
+
+### Credentials (authToken)
+
+- The panel is write-only for `authToken` (always shows "Set / Not set", input starts
+  empty; a blank input = no change).
+- "Clear override" only removes the user-layer override and falls back to the existing
+  token in `cordis.patch.yml`; it never silently disables auth.
+- When the final resolved value is empty, the panel explicitly warns "Not set = no
+  auth (dangerous)".
+- The `A2A_SERVER_TOKEN` environment variable takes precedence over configuration; in
+  that case the panel shows "managed by environment variable" and is not editable.
+
+### Degradation
+
+When the settings service is absent the plugin keeps working, using only the
+`cordis.patch.yml` configuration; the settings card does not appear in that profile.
+
+### Installation & build
+
+No extra install steps: `link:` or a normal install followed by a dsh restart is
+enough. The published artifact ships both the host output `lib/` and the browser
+output `client/`; git installs build both halves automatically via the `prepare`
+script.
 
 ## agent-team mount (deployment notes)
 
@@ -213,8 +275,8 @@ includes it by default).
   `SendStreamingMessage` pushes thinking / tool / status / text intermediate
   events in real time (text Part + data Part private extension).
 - Transport choice: JSON-RPC over node:http (self-built listener, not express);
-  the agent card is served from the public `/.well-known/agent-card.json`
-  endpoint.
+  the agent card is served from the `/.well-known/agent-card.json`
+  endpoint (also protected by Bearer auth).
 
 ## Naming
 

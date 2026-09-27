@@ -9,6 +9,30 @@
 
 （暂无未发布变更）
 
+## [0.2.0] - 2026-09-26
+
+### Added
+
+- 设置面板：dsh Web UI「设置 → 插件 → Plugin configuration」新增 `a2a-server` 设置
+  卡片（官方 settings seam，注册命名空间 `a2a-server`，无需改 dsh 仓库、无需白
+  名单），可读写 provider / model / preset / cwd / port / host / authToken /
+  contextMapPath / contextMapTtlDays；配置分层为 schema 默认 < `cordis.patch.yml` <
+  `$DSH_HOME/settings.yaml` 用户覆盖，支持「清除覆盖」回落。
+- 浏览器半边与构建产物：新增 client 设置卡（react + locales + card-controller），
+  发布物同时包含 host 产物 `lib/` 与浏览器产物 `client/`。
+- 新增依赖：`@deepseek-ai/schemastery`（dependencies）及 react 与
+  `@deepseek-ai/dsh-client-*`（devDependencies）。
+
+### Changed
+
+- 构建脚本 `build` / `prepare` 改为同时产出 host（`lib/`）与 client（`client/`）
+  两半，git 安装由 `prepare` 自动构建。
+
+### Fixed
+
+- `runtimeConfig` 写入由「真值守卫」改为按解析值整份赋值（含 `undefined` 回落），
+  修复「清空字段 / 清除覆盖后行为不变」的问题。
+
 ## [0.1.0] - 2026-09-12
 
 ### Added

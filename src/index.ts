@@ -50,6 +50,8 @@ import {
   ServerCallContext,
 } from '@a2a-js/sdk/server'
 import type { AgentExecutor, ExecutionEventBus, RequestContext } from '@a2a-js/sdk/server'
+import { installA2ASettings } from './settings.ts'
+import type { A2ASettings } from './settings.ts'
 
 /** Cordis 插件名 */
 export const name = 'dsh-a2a-server'
@@ -82,7 +84,7 @@ export interface Config {
 /** 逐请求携带执行模式（同步 / 流式）：HTTP 层写入，execute 内读取 */
 const executionMode = new AsyncLocalStorage<{ streaming: boolean }>()
 
-/** 运行时配置（apply 时从 config / 环境初始化，提供安全默认值） */
+/** 运行时配置（apply 时从 config / settings / 环境初始化，提供安全默认值） */
 const runtimeConfig = {
   provider: 'deepseek-official',
   // 空字符串 = 不覆盖 model，跟随 dsh 的用户/默认设置；显式配置则覆盖
@@ -90,6 +92,9 @@ const runtimeConfig = {
   preset: 'standard',
   authToken: '',
   cwd: '',
+  port: undefined as number | undefined,
+  host: undefined as string | undefined,
+  contextMapPath: undefined as string | undefined,
   contextMapTtlDays: 7,
 }
 
@@ -636,27 +641,55 @@ function buildAgentCard(host: string, port: number): AgentCard {
 }
 
 /**
+ * 按整份 resolved 值覆盖 runtimeConfig（缺失字段回落安全默认，不做真值守卫：
+ * 空串/空值也按其既有语义落库），再施加环境令牌的最高优先级。entry config
+ * 初始化与 settings 每次 onChange 共用本函数，保证「清空字段/清除覆盖」之后
+ * 行为与面板显示一致。
+ */
+function applyResolvedConfig(resolved: A2ASettings): void {
+  runtimeConfig.provider = resolved.provider ?? 'deepseek-official'
+  runtimeConfig.model = resolved.model ?? 'deepseek-v4-flash'
+  runtimeConfig.preset = resolved.preset ?? 'standard'
+  runtimeConfig.cwd = resolved.cwd ?? ''
+  runtimeConfig.authToken = resolved.authToken ?? ''
+  runtimeConfig.port = resolved.port
+  runtimeConfig.host = resolved.host
+  runtimeConfig.contextMapPath = resolved.contextMapPath
+  runtimeConfig.contextMapTtlDays = resolved.contextMapTtlDays ?? 7
+  // 环境变量是最简外部通道，优先级最高（settings 写入也压不过它）
+  if (process.env.A2A_SERVER_TOKEN) runtimeConfig.authToken = process.env.A2A_SERVER_TOKEN
+  // 每次配置被应用时打一行不含任何密钥的信息日志（authToken 只报有无）
+  console.log(
+    `[dsh-a2a-server] settings applied: provider=${runtimeConfig.provider} model=${runtimeConfig.model}` +
+    ` preset=${runtimeConfig.preset} cwd=${runtimeConfig.cwd || '(process.cwd())'}` +
+    ` port=${runtimeConfig.port ?? '(auto)'} host=${runtimeConfig.host ?? '(default 127.0.0.1)'}` +
+    ` contextMapPath=${runtimeConfig.contextMapPath ?? '(default)'}` +
+    ` contextMapTtlDays=${runtimeConfig.contextMapTtlDays}` +
+    ` authToken=${runtimeConfig.authToken ? '<set>' : '<unset>'}`,
+  )
+}
+
+/**
  * 插件入口：初始化运行时配置，探测端口，启动 node:http listener 挂
  * JsonRpcTransportHandler，通过 ctx.effect 注册 dispose（关 server）。
  */
 export async function apply(ctx: Context, config: Config = {}): Promise<void> {
-  if (config.provider) runtimeConfig.provider = config.provider
-  if (config.model !== undefined) runtimeConfig.model = config.model
-  if (config.preset) runtimeConfig.preset = config.preset
-  if (config.authToken) runtimeConfig.authToken = config.authToken
-  if (config.cwd) runtimeConfig.cwd = config.cwd
-  if (config.contextMapTtlDays !== undefined) runtimeConfig.contextMapTtlDays = config.contextMapTtlDays
-  // 运行配置也可从环境读（覆盖 cordis 配置之外的最简通道）
-  if (process.env.A2A_SERVER_TOKEN) runtimeConfig.authToken = process.env.A2A_SERVER_TOKEN
+  // 1) entry config 先落 runtimeConfig（安全默认值 + 环境令牌优先级）
+  applyResolvedConfig(config)
 
-  // contextId 会话映射持久文件路径: 配置 > dshHomePath 服务 > ~/.dsh fallback
+  // 2) 挂载 settings 命名空间：installSection attach 时会同步 apply 一次
+  //    resolved 值（schema 默认 < base < user），之后每次 commit 都重新 apply；
+  //    settings 缺失/注册失败时保持上面的 entry config 结果不变。
+  installA2ASettings(ctx, config, applyResolvedConfig)
+
+  // 3) settings 层就绪后才解析路径与监听地址，让用户层在首次 listen 前生效
   const dshHome = ctx.get('dshHomePath') as ((...segments: string[]) => string) | undefined
-  contextMapPath = config.contextMapPath
+  contextMapPath = runtimeConfig.contextMapPath
     ?? (dshHome ? dshHome('storages', 'a2a-context-map.json') : join(homedir(), '.dsh', 'storages', 'a2a-context-map.json'))
   await loadContextMap()
 
-  const host = config.host ?? '127.0.0.1'
-  const port = config.port ?? (await probePort())
+  const host = runtimeConfig.host ?? '127.0.0.1'
+  const port = runtimeConfig.port ?? (await probePort())
 
   const agentCard = buildAgentCard(host, port)
   const taskStore = new InMemoryTaskStore()

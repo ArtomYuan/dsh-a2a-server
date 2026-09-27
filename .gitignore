@@ -1,5 +1,6 @@
 node_modules/
 lib/
+/client/
 *.tgz
 .DS_Store
 .env
