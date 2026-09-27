@@ -130,6 +130,10 @@ dsh Web UI「设置 → 插件 → Plugin configuration」会自动出现 `a2a-s
 settings 能力：host 侧注册 settings 命名空间 `a2a-server`（schema 由 schemastery
 定义），浏览器侧提供一张设置卡。
 
+卡片是折叠式的（与 dsh 官方插件卡一致）：默认收起，点击卡片头展开或收起；
+有未保存改动时卡片头显示「未保存」标记，保存成功后自动收起。折叠不会丢弃
+尚未保存的改稿。
+
 ### 配置分层
 
 - `cordis.patch.yml` 里的插件 `config` 仍是 composition（base）层与事实源；

@@ -154,6 +154,11 @@ the official dsh settings seam: the host side registers the `a2a-server` setting
 namespace (schema defined by schemastery), and the browser side provides a settings
 card.
 
+The card is collapsible, matching the official dsh plugin cards: it starts
+collapsed, and clicking its header expands or collapses it. While edits are
+unsaved the header carries an "Unsaved" marker, and a successful save collapses
+the card again. Collapsing never discards drafts.
+
 ### Configuration layering
 
 - The plugin `config` in `cordis.patch.yml` remains the composition (base) layer and
