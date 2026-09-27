@@ -1,4 +1,6 @@
-# Changelog
+# 更新日志
+
+[English](CHANGELOG.en.md)
 
 本项目的所有重要变更都会记录在此文件中。
 
@@ -9,7 +11,7 @@
 
 （暂无未发布变更）
 
-## [0.2.0] - 2026-09-26
+## [0.2.0] - 2026-09-27
 
 ### Added
 
@@ -49,7 +51,7 @@
   同步执行。
 - agent card：`GET /.well-known/agent-card.json` 公开端点（JSONRPC binding、
   protocolVersion 1.0、capabilities.streaming）。
-- Bearer 认证：配置 `authToken` 后强制校验 `Authorization: Bearer <token>`。
+- Bearer 认证：配置 `authToken` 后强制校验 `Authorization: Bearer ***
 - contextId 会话复用 + 跨重启 resume：`message.contextId` 映射到 dsh 会话，映射
   持久化到 `$DSH_HOME/storages/a2a-context-map.json`，带 TTL 清理（默认 7 天）。
 - agent-team preset 挂载（`preset: agent-team`）。
