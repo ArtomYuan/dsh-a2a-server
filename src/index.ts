@@ -19,6 +19,9 @@
  *     把思考/工具/状态/文本等中间事件作为 A2A `artifactUpdate`（文本用 text
  *     Part、非文本用 data Part 私有扩展）实时推给客户端。
  *   - contextMap 每条目记 lastUsedAt，TTL（默认 7 天）清理过期孤儿条目。
+ *
+ * P3 工作区自动归组：
+ *   - 新建会话后自动登记到其 cwd 对应的工作区；启动时对存量未分组会话批量捞回补挂。
  */
 
 import type { Context } from '@deepseek-ai/cordis'
@@ -28,6 +31,7 @@ import type {} from '@deepseek-ai/dsh-agent-presets'
 import type { AgentHandle } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
+import type { SessionHeader } from '@deepseek-ai/dsh-session'
 import { scopeOf } from '@deepseek-ai/dsh-scope'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
@@ -133,6 +137,46 @@ async function canonicalCwd(raw: string): Promise<string> {
   } catch {
     return resolve(raw)
   }
+}
+
+/** 工作区视图（ctx.get('workspaceRegistry')）：可选依赖，headless / 无 workspace 插件的环境自动跳过 */
+interface WorkspaceView {
+  id: string
+  path: string
+  sessionIds: readonly SessionId[]
+  attachSession?: (sessionId: SessionId) => Promise<void>
+}
+interface WorkspaceRegistryView {
+  create?: (path: string) => Promise<WorkspaceView>
+  resolveByPath?: (path: string) => Promise<WorkspaceView | undefined>
+  list?: () => WorkspaceView[]
+}
+
+/** resolveByPath ?? create，幂等；无 workspaceRegistry 时返回 undefined */
+async function ensureWorkspace(ctx: Context, canonical: string): Promise<WorkspaceView | undefined> {
+  const registry = ctx.get('workspaceRegistry') as WorkspaceRegistryView | undefined
+  if (!registry) return undefined
+  return (await registry.resolveByPath?.(canonical)) ?? (await registry.create?.(canonical))
+}
+
+/**
+ * 把会话挂名到其 cwd 对应的工作区。官方 attachSession 强校验 realpath(header.cwd)
+ * 精确等于 workspace.path，所以 canonical 必须是 header.cwd 的 realpath 规范化值；
+ * 失败仅告警不阻断任务（分组是锦上添花）。
+ */
+async function attachToWorkspace(ctx: Context, canonical: string, sessionId: SessionId): Promise<void> {
+  try {
+    const ws = await ensureWorkspace(ctx, canonical)
+    if (ws?.attachSession) await ws.attachSession(sessionId)
+  } catch (e) {
+    console.warn('[dsh-a2a-server] workspace attach failed:', (e as Error)?.message ?? e)
+  }
+}
+
+/** 按会话 header 的 cwd（realpath 规范化后）补挂工作区；header 无 cwd 时静默跳过 */
+async function attachSessionCwd(ctx: Context, sessionId: SessionId, cwd: string | undefined): Promise<void> {
+  if (cwd === undefined) return
+  await attachToWorkspace(ctx, await canonicalCwd(cwd), sessionId)
 }
 
 /** 读取 HTTP 请求体为 UTF-8 字符串 */
@@ -293,6 +337,8 @@ async function resolveSession(
       })
       // 命中：刷新最近使用时间戳（TTL 依据）
       mapped.lastUsedAt = Date.now()
+      // 接管：幂等补挂工作区（attachToWorkspace 内部已 try/catch 仅 warn）
+      await attachSessionCwd(ctx, sid, handle.agent.session.header.cwd)
       return { sessionId: sid, handle }
     } catch (e) {
       // resume 失败（会话已删/损坏）：懒删映射，落到下方新建分支（不抛错）
@@ -309,6 +355,15 @@ async function resolveSession(
   })
   contextMap.set(key, { sessionId: String(newSessionId), lastUsedAt: Date.now() })
   void persistContextMap()
+  // 分组：把会话归属到 cwd 对应的工作区（resolveByPath ?? create + attachSession；可选依赖；headless 环境自动跳过）
+  void (async () => {
+    try {
+      const ws = await ensureWorkspace(ctx, cwd)
+      if (ws?.attachSession) await ws.attachSession(newSessionId)
+    } catch (e) {
+      console.warn('[dsh-a2a-server] workspace attach failed:', (e as Error)?.message ?? e)
+    }
+  })()
   return { sessionId: newSessionId, handle }
 }
 
@@ -670,6 +725,46 @@ function applyResolvedConfig(resolved: A2ASettings): void {
 }
 
 /**
+ * 存量捞回：启动时把现存未分组的会话补挂到已注册工作区。
+ * 条件：header.cwd 的 realpath 等于某已注册 workspace.path，且该 sessionId 不在其花名册里。
+ * 只补挂到「已注册」工作区，不新建（避免把无关目录刷成新工作区）；单会话失败不影响其余。
+ */
+async function reattachOrphanSessions(ctx: Context): Promise<{ attached: number; failed: number }> {
+  const registry = ctx.get('workspaceRegistry') as WorkspaceRegistryView | undefined
+  const byPath = new Map<string, WorkspaceView>()
+  for (const ws of registry?.list?.() ?? []) byPath.set(ws.path, ws)
+  if (byPath.size === 0) return { attached: 0, failed: 0 }
+
+  // live + 持久化 header 合并（live 优先），按 id 去重
+  const headers = new Map<string, SessionHeader>()
+  const sessions = ctx.get('sessions') as { list?: () => { header: SessionHeader }[] } | undefined
+  for (const session of sessions?.list?.() ?? []) headers.set(session.header.id, session.header)
+  const persistence = ctx.get('sessionPersistence') as { list?: () => Promise<SessionHeader[]> } | undefined
+  for (const header of (await persistence?.list?.()) ?? []) {
+    if (!headers.has(header.id)) headers.set(header.id, header)
+  }
+
+  let attached = 0
+  let failed = 0
+  for (const header of headers.values()) {
+    if (header.cwd === undefined) continue
+    const canonical = await canonicalCwd(header.cwd)
+    const ws = byPath.get(canonical)
+    if (ws === undefined || !ws.attachSession) continue
+    if (ws.sessionIds.includes(header.id)) continue
+    try {
+      await ws.attachSession(header.id)
+      attached++
+      console.log(`[dsh-a2a-server] 存量捞回: session ${header.id} -> workspace ${ws.path}`)
+    } catch (e) {
+      failed++
+      console.warn(`[dsh-a2a-server] 存量捞回失败 session ${header.id}:`, (e as Error)?.message ?? e)
+    }
+  }
+  return { attached, failed }
+}
+
+/**
  * 插件入口：初始化运行时配置，探测端口，启动 node:http listener 挂
  * JsonRpcTransportHandler，通过 ctx.effect 注册 dispose（关 server）。
  */
@@ -783,6 +878,16 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     })
   })
   console.log(`[dsh-a2a-server] A2A server listening on ${host}:${port}`)
+
+  // 存量捞回：启动后异步补挂未分组会话，不阻塞启动；全程兜底 try/catch 防 unhandled rejection
+  void (async () => {
+    try {
+      const { attached, failed } = await reattachOrphanSessions(ctx)
+      console.log(`[dsh-a2a-server] 存量捞回: attached=${attached} failed=${failed}`)
+    } catch (e) {
+      console.warn('[dsh-a2a-server] 存量捞回异常:', (e as Error)?.message ?? e)
+    }
+  })()
 
   // 标准 cordis 生命周期：卸载时关闭 server + 清空映射
   ctx.effect(() => {
