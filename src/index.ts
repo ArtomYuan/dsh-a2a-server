@@ -739,9 +739,12 @@ async function reattachOrphanSessions(ctx: Context): Promise<{ attached: number;
   const headers = new Map<string, SessionHeader>()
   const sessions = ctx.get('sessions') as { list?: () => { header: SessionHeader }[] } | undefined
   for (const session of sessions?.list?.() ?? []) headers.set(session.header.id, session.header)
-  const persistence = ctx.get('sessionPersistence') as { list?: () => Promise<SessionHeader[]> } | undefined
-  for (const header of (await persistence?.list?.()) ?? []) {
-    if (!headers.has(header.id)) headers.set(header.id, header)
+  // sessionPersistence.list() 返回持久化快照（{ header, ... }），需解包出 header
+  const persistence = ctx.get('sessionPersistence') as
+    | { list?: () => Promise<readonly { header: SessionHeader }[]> }
+    | undefined
+  for (const snapshot of (await persistence?.list?.()) ?? []) {
+    if (!headers.has(snapshot.header.id)) headers.set(snapshot.header.id, snapshot.header)
   }
 
   let attached = 0
