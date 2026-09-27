@@ -3,12 +3,19 @@
  * 「即时生效」与「重启后生效」字段。全部自持：内联样式（不用 CSS Modules，
  * 避免引入 lightningcss 构建链）、无跨插件 value import。
  *
- * 根节点始终带 data-testid / data-ns / data-scope-status，非 ready 时只加
- * `hidden` 而不返回 null——CDP 可用 DOM 存在性判定卡片「真渲染」（决策 C9）。
+ * 卡片头是折叠开关（官方 PluginCard 同款交互）：默认收起，点击标题在展开/
+ * 收起间切换，保存成功后自动收起、失败则保持展开并保留草稿。折叠是本卡的
+ * 阅读状态，草稿由 controller 持有，收起不丢改动；带头在收起态显示「未保存」
+ * 标记。头按钮带 aria-expanded 与 aria-label（双语字典）。
+ *
+ * 根节点始终带 data-testid / data-ns / data-scope-status（外加 data-open 与
+ * 头/体/未保存标记的 data-testid），非 ready 时只加 `hidden` 而不返回 null
+ * ——CDP 可用 DOM 存在性判定卡片「真渲染」（决策 C9）。
  */
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
+import { IconChevronDownOutline14, Tag } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SnapshotSelectorHook, TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import type { A2ACardKey } from './locales.ts'
 import type {
@@ -27,24 +34,85 @@ export interface A2ASettingsCardProps {
   clearAuthToken: () => void
 }
 
-// ── 内联样式（无 CSS Modules 构建链）───────────────────────────────────
+// ── 内联样式（无 CSS Modules 构建链，观感对齐官方 PluginCard）─────────
 
-const rootStyle: React.CSSProperties = {
+const cardStyle: React.CSSProperties = {
+  listStyle: 'none',
   fontFamily: 'inherit',
   fontSize: '13px',
   lineHeight: 1.5,
   color: 'inherit',
+  border: '0.5px solid var(--dsw-alias-border-l4)',
+  borderRadius: '16px',
+  background: 'var(--dsw-alias-bg-layer-3)',
+  transition: 'border-color .16s, background .16s',
 }
 
-const titleStyle: React.CSSProperties = {
-  margin: '0 0 4px',
-  fontSize: '14px',
+/** 展开态读作「正在编辑的那张卡」，而不只是变高了 */
+const cardOpenStyle: React.CSSProperties = {
+  background: 'var(--dsw-alias-bg-layer-2)',
+  borderColor: 'var(--dsw-alias-label-dimmed)',
+}
+
+const headerStyle: React.CSSProperties = {
+  width: '100%',
+  appearance: 'none',
+  border: 0,
+  background: 'none',
+  font: 'inherit',
+  color: 'inherit',
+  textAlign: 'left',
+  cursor: 'pointer',
+  display: 'flex',
+  alignItems: 'center',
+  gap: '12px',
+  padding: '14px 16px',
+  borderRadius: '12px',
+}
+
+const headTextStyle: React.CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '4px',
+}
+
+const nameStyle: React.CSSProperties = {
+  fontSize: '15px',
   fontWeight: 600,
+  lineHeight: 1.4,
+  color: 'var(--dsw-alias-label-primary)',
 }
 
 const descriptionStyle: React.CSSProperties = {
-  margin: '0 0 12px',
-  opacity: 0.75,
+  fontSize: '13px',
+  lineHeight: 1.5,
+  color: 'var(--dsw-alias-label-tertiary)',
+}
+
+/** 未保存标记的定位壳（胶囊外观由 Tag 提供；Tag 不接受 data-* 透传） */
+const pendingStyle: React.CSSProperties = {
+  flex: 'none',
+  display: 'inline-flex',
+}
+
+const chevronStyle: React.CSSProperties = {
+  flex: 'none',
+  display: 'inline-flex',
+  color: 'var(--dsw-alias-label-tertiary)',
+  transition: 'transform .16s',
+}
+
+const chevronOpenStyle: React.CSSProperties = {
+  transform: 'rotate(180deg)',
+}
+
+const bodyStyle: React.CSSProperties = {
+  borderTop: '0.5px solid var(--dsw-alias-border-l2)',
+  margin: '0 16px',
+  paddingTop: '12px',
+  paddingBottom: '8px',
 }
 
 const groupStyle: React.CSSProperties = {
@@ -143,11 +211,14 @@ const invalidStyle: React.CSSProperties = {
 const footerStyle: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
+  justifyContent: 'flex-end',
   gap: '10px',
   marginTop: '10px',
 }
 
 const failedStyle: React.CSSProperties = {
+  flex: 1,
+  minWidth: 0,
   fontSize: '12px',
   color: '#e06040',
 }
@@ -227,139 +298,179 @@ function FieldRow(props: {
 export function A2ASettingsCard(props: A2ASettingsCardProps): ReactNode {
   const { t } = props
   const state = props.useA2aSettings(snapshot => snapshot)
+  const [open, setOpen] = useState(false)
   const [confirmClearToken, setConfirmClearToken] = useState(false)
+  const saveStarted = useRef(false)
   const ready = state.status === 'ready'
   const disabled = !state.writable || state.saving
+
+  // 保存成功后自动收起；被拒绝或失败的写入保持展开，让诊断与草稿留在眼前。
+  useEffect(() => {
+    if (state.saving) {
+      saveStarted.current = true
+      return
+    }
+    if (!saveStarted.current) return
+    saveStarted.current = false
+    if (!state.dirty && !state.failed) setOpen(false)
+  }, [state.dirty, state.failed, state.saving])
 
   const liveFields: A2AEditableField[] = ['provider', 'model', 'preset', 'cwd', 'contextMapTtlDays']
   const restartFields: A2AEditableField[] = ['port', 'host', 'contextMapPath']
 
   const token = state.fields.authToken
   const tokenDisabled = disabled || token.envToken
+  const title = t('a2aTitle')
 
   return (
-    <div
-      style={rootStyle}
+    <li
+      style={open ? { ...cardStyle, ...cardOpenStyle } : cardStyle}
       hidden={!ready || undefined}
       data-testid="a2a-server-card"
       data-ns="a2a-server"
       data-scope-status={state.status}
+      data-open={open ? 'true' : 'false'}
     >
       {!ready ? (
-        <p>{state.status === 'loading' ? t('loading') : t('unavailable')}</p>
+        <p style={{ margin: 0, padding: '14px 16px' }}>
+          {state.status === 'loading' ? t('loading') : t('unavailable')}
+        </p>
       ) : (
         <>
-          <h3 style={titleStyle}>{t('a2aTitle')}</h3>
-          <p style={descriptionStyle}>{t('a2aDescription')}</p>
+          <button
+            type="button"
+            style={headerStyle}
+            data-testid="a2a-server-card-header"
+            aria-expanded={open}
+            aria-label={`${t(open ? 'collapse' : 'expand')}: ${title}`}
+            onClick={() => { setOpen(!open) }}
+          >
+            <span style={headTextStyle}>
+              <span style={nameStyle}>{title}</span>
+              <span style={descriptionStyle}>{t('a2aDescription')}</span>
+            </span>
+            {state.dirty ? (
+              <span style={pendingStyle} data-testid="a2a-server-card-unsaved">
+                <Tag tone="neutral">{t('unsaved')}</Tag>
+              </span>
+            ) : null}
+            <span style={open ? { ...chevronStyle, ...chevronOpenStyle } : chevronStyle}>
+              <IconChevronDownOutline14 />
+            </span>
+          </button>
 
-          <div style={groupStyle}>
-            <p style={groupLabelStyle}>{t('groupLive')}</p>
-            <p style={groupHintStyle}>{t('groupLiveHint')}</p>
-            {liveFields.map(field => (
-              <FieldRow
-                key={field}
-                t={t}
-                label={t(FIELD_LABEL_KEYS[field])}
-                hint={t(FIELD_HINT_KEYS[field])}
-                field={field}
-                state={state}
-                disabled={disabled}
-                onEdit={props.edit}
-                onClear={props.clearOverride}
-              />
-            ))}
-
-            {/* authToken：只写不回显 */}
-            <div style={rowStyle}>
-              <span style={labelStyle}>{t('fieldAuthToken')}</span>
-              <input
-                style={inputStyle}
-                type="password"
-                value={token.text}
-                disabled={tokenDisabled}
-                placeholder={t('authTokenPlaceholder')}
-                onChange={(event) => { props.edit('authToken', event.target.value) }}
-              />
-              {token.envToken ? (
-                <span style={envBadgeStyle}>{t('authTokenEnvBadge')}</span>
-              ) : token.configured ? (
-                <span style={badgeStyle}>{t('authTokenSet')}</span>
-              ) : (
-                <span style={dangerBadgeStyle}>{t('authTokenUnsetDanger')}</span>
-              )}
-              {token.configured && !token.envToken ? (
-                confirmClearToken ? (
-                  <span>
-                    <span style={fieldHintStyle}>{t('authTokenClearConfirmText')}</span>
-                    <button
-                      style={dangerBadgeStyle}
-                      disabled={disabled}
-                      onClick={() => {
-                        setConfirmClearToken(false)
-                        props.clearAuthToken()
-                      }}
-                    >
-                      {t('confirm')}
-                    </button>
-                    <button style={buttonStyle} onClick={() => { setConfirmClearToken(false) }}>
-                      {t('cancel')}
-                    </button>
-                  </span>
-                ) : (
-                  <button
-                    style={buttonStyle}
+          {open ? (
+            <div style={bodyStyle} data-testid="a2a-server-card-body">
+              <div style={groupStyle}>
+                <p style={groupLabelStyle}>{t('groupLive')}</p>
+                <p style={groupHintStyle}>{t('groupLiveHint')}</p>
+                {liveFields.map(field => (
+                  <FieldRow
+                    key={field}
+                    t={t}
+                    label={t(FIELD_LABEL_KEYS[field])}
+                    hint={t(FIELD_HINT_KEYS[field])}
+                    field={field}
+                    state={state}
                     disabled={disabled}
-                    onClick={() => { setConfirmClearToken(true) }}
-                  >
-                    {t('clearOverride')}
-                  </button>
-                )
-              ) : null}
-              {token.envToken ? (
-                <span style={fieldHintStyle}>{t('authTokenEnvHint')}</span>
-              ) : token.configured ? null : (
-                <span style={fieldHintStyle}>{t('authTokenUnset')} — {t('fieldAuthTokenHint')}</span>
-              )}
+                    onEdit={props.edit}
+                    onClear={props.clearOverride}
+                  />
+                ))}
+
+                {/* authToken：只写不回显 */}
+                <div style={rowStyle}>
+                  <span style={labelStyle}>{t('fieldAuthToken')}</span>
+                  <input
+                    style={inputStyle}
+                    type="password"
+                    value={token.text}
+                    disabled={tokenDisabled}
+                    placeholder={t('authTokenPlaceholder')}
+                    onChange={(event) => { props.edit('authToken', event.target.value) }}
+                  />
+                  {token.envToken ? (
+                    <span style={envBadgeStyle}>{t('authTokenEnvBadge')}</span>
+                  ) : token.configured ? (
+                    <span style={badgeStyle}>{t('authTokenSet')}</span>
+                  ) : (
+                    <span style={dangerBadgeStyle}>{t('authTokenUnsetDanger')}</span>
+                  )}
+                  {token.configured && !token.envToken ? (
+                    confirmClearToken ? (
+                      <span>
+                        <span style={fieldHintStyle}>{t('authTokenClearConfirmText')}</span>
+                        <button
+                          style={dangerBadgeStyle}
+                          disabled={disabled}
+                          onClick={() => {
+                            setConfirmClearToken(false)
+                            props.clearAuthToken()
+                          }}
+                        >
+                          {t('confirm')}
+                        </button>
+                        <button style={buttonStyle} onClick={() => { setConfirmClearToken(false) }}>
+                          {t('cancel')}
+                        </button>
+                      </span>
+                    ) : (
+                      <button
+                        style={buttonStyle}
+                        disabled={disabled}
+                        onClick={() => { setConfirmClearToken(true) }}
+                      >
+                        {t('clearOverride')}
+                      </button>
+                    )
+                  ) : null}
+                  {token.envToken ? (
+                    <span style={fieldHintStyle}>{t('authTokenEnvHint')}</span>
+                  ) : token.configured ? null : (
+                    <span style={fieldHintStyle}>{t('authTokenUnset')} — {t('fieldAuthTokenHint')}</span>
+                  )}
+                </div>
+              </div>
+
+              <div style={groupStyle}>
+                <p style={groupLabelStyle}>{t('groupRestart')}</p>
+                <p style={groupHintStyle}>{t('groupRestartHint')}</p>
+                {restartFields.map(field => (
+                  <FieldRow
+                    key={field}
+                    t={t}
+                    label={t(FIELD_LABEL_KEYS[field])}
+                    hint={t(FIELD_HINT_KEYS[field])}
+                    field={field}
+                    state={state}
+                    disabled={disabled}
+                    onEdit={props.edit}
+                    onClear={props.clearOverride}
+                  />
+                ))}
+              </div>
+
+              <div style={footerStyle}>
+                {state.failed ? <span style={failedStyle}>{t('saveFailed')}</span> : null}
+                <button
+                  style={buttonStyle}
+                  disabled={disabled || !state.dirty}
+                  onClick={() => { props.discard() }}
+                >
+                  {t('discard')}
+                </button>
+                <button
+                  style={primaryButtonStyle}
+                  disabled={disabled || !state.dirty || state.invalid}
+                  onClick={() => { props.save() }}
+                >
+                  {t('save')}
+                </button>
+              </div>
             </div>
-          </div>
-
-          <div style={groupStyle}>
-            <p style={groupLabelStyle}>{t('groupRestart')}</p>
-            <p style={groupHintStyle}>{t('groupRestartHint')}</p>
-            {restartFields.map(field => (
-              <FieldRow
-                key={field}
-                t={t}
-                label={t(FIELD_LABEL_KEYS[field])}
-                hint={t(FIELD_HINT_KEYS[field])}
-                field={field}
-                state={state}
-                disabled={disabled}
-                onEdit={props.edit}
-                onClear={props.clearOverride}
-              />
-            ))}
-          </div>
-
-          <div style={footerStyle}>
-            <button
-              style={primaryButtonStyle}
-              disabled={disabled || !state.dirty || state.invalid}
-              onClick={() => { props.save() }}
-            >
-              {t('save')}
-            </button>
-            <button
-              style={buttonStyle}
-              disabled={disabled || !state.dirty}
-              onClick={() => { props.discard() }}
-            >
-              {t('discard')}
-            </button>
-            {state.failed ? <span style={failedStyle}>{t('saveFailed')}</span> : null}
-          </div>
+          ) : null}
         </>
       )}
-    </div>
+    </li>
   )
 }

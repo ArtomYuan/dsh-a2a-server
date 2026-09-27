@@ -52,6 +52,9 @@ export type A2ACardKey =
   | 'unavailable'
   | 'confirm'
   | 'cancel'
+  | 'expand'
+  | 'collapse'
+  | 'unsaved'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
@@ -104,6 +107,9 @@ export const zh: Record<A2ACardKey, string> = {
   unavailable: '设置服务不可用（该命名空间未对本客户端开放）。',
   confirm: '确认清除',
   cancel: '取消',
+  expand: '展开',
+  collapse: '收起',
+  unsaved: '未保存',
 }
 
 export const en: Record<A2ACardKey, string> = {
@@ -151,4 +157,7 @@ export const en: Record<A2ACardKey, string> = {
   unavailable: 'Settings service unavailable (the namespace is not exposed to this client).',
   confirm: 'Confirm clear',
   cancel: 'Cancel',
+  expand: 'Expand',
+  collapse: 'Collapse',
+  unsaved: 'Unsaved',
 }

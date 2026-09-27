@@ -25,6 +25,13 @@
 
 ### Changed
 
+- 设置卡改为折叠式卡片：默认收起，点击卡片头在展开/收起间切换；保存成功后
+  自动收起、被拒绝的写入保持展开；有未保存改动时卡片头显示「未保存」标记。
+  交互与官方插件卡（PluginCard）对齐：头按钮带 `aria-expanded` 与双语
+  `aria-label`，chevron 复用模块表共享件
+  `@deepseek-ai/dsh-client-ui-primitives`，观感走 `--dsw-*` token。
+  折叠状态经根节点 `data-open` 暴露，`data-testid` / `data-ns` /
+  `data-scope-status` 契约不变。
 - 构建脚本 `build` / `prepare` 改为同时产出 host（`lib/`）与 client（`client/`）
   两半，git 安装由 `prepare` 自动构建。
 
