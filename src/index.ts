@@ -725,7 +725,8 @@ function applyResolvedConfig(resolved: A2ASettings): void {
 }
 
 /**
- * 存量捞回：启动时把现存未分组的会话补挂到已注册工作区。
+ * 存量捞回：把现存未分组的会话补挂到已注册工作区。
+ * 由 ctx.inject(['workspaceRegistry', 'sessionPersistence']) 在两服务就绪后调用。
  * 条件：header.cwd 的 realpath 等于某已注册 workspace.path，且该 sessionId 不在其花名册里。
  * 只补挂到「已注册」工作区，不新建（避免把无关目录刷成新工作区）；单会话失败不影响其余。
  */
@@ -733,7 +734,10 @@ async function reattachOrphanSessions(ctx: Context): Promise<{ attached: number;
   const registry = ctx.get('workspaceRegistry') as WorkspaceRegistryView | undefined
   const byPath = new Map<string, WorkspaceView>()
   for (const ws of registry?.list?.() ?? []) byPath.set(ws.path, ws)
-  if (byPath.size === 0) return { attached: 0, failed: 0 }
+  if (byPath.size === 0) {
+    console.warn('[dsh-a2a-server] 存量捞回: workspaceRegistry 无可注册工作区，跳过')
+    return { attached: 0, failed: 0 }
+  }
 
   // live + 持久化 header 合并（live 优先），按 id 去重
   const headers = new Map<string, SessionHeader>()
@@ -882,15 +886,22 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
   })
   console.log(`[dsh-a2a-server] A2A server listening on ${host}:${port}`)
 
-  // 存量捞回：启动后异步补挂未分组会话，不阻塞启动；全程兜底 try/catch 防 unhandled rejection
-  void (async () => {
-    try {
-      const { attached, failed } = await reattachOrphanSessions(ctx)
-      console.log(`[dsh-a2a-server] 存量捞回: attached=${attached} failed=${failed}`)
-    } catch (e) {
-      console.warn('[dsh-a2a-server] 存量捞回异常:', (e as Error)?.message ?? e)
-    }
-  })()
+  // 存量捞回：改为 ctx.inject 运行时依赖，等 workspaceRegistry / sessionPersistence 都就绪（ACTIVE）
+  // 后再补挂，修复启动期 registry 尚未就绪时 ctx.get 返回 undefined 导致的静默 attached=0 竞态。
+  // 不阻塞启动（apply 不 await），也不进入静态 inject 硬依赖（不推迟插件加载、不破坏 headless）。
+  // 依赖重载会卸载并重跑本 callback；幂等性由 ws.sessionIds.includes(header.id) 跳过 + attachSession 幂等保证。
+  ctx.inject(['workspaceRegistry', 'sessionPersistence'], () => {
+    console.log('[dsh-a2a-server] 存量捞回: workspaceRegistry 就绪，开始补挂')
+    // callback 同步返回；异步捞回内部 fire-and-forget，全程兜底 try/catch 防 unhandled rejection
+    void (async () => {
+      try {
+        const { attached, failed } = await reattachOrphanSessions(ctx)
+        console.log(`[dsh-a2a-server] 存量捞回: attached=${attached} failed=${failed}`)
+      } catch (e) {
+        console.warn('[dsh-a2a-server] 存量捞回异常:', (e as Error)?.message ?? e)
+      }
+    })()
+  })
 
   // 标准 cordis 生命周期：卸载时关闭 server + 清空映射
   ctx.effect(() => {
