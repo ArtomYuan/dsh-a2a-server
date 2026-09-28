@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-28
+
 ### Fixed
 
 - Sessions now auto-register to their workspace (grouped immediately after creation), and orphaned ungrouped sessions are re-attached in a startup backfill, fixing sessions created via A2A showing as "Ungrouped" in the Web UI.
