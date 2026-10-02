@@ -28,6 +28,12 @@ import type { Context } from '@deepseek-ai/cordis'
 // 类型声明合并：让 ctx.agents / ctx.agentPresets 在 Context 上有类型
 import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-presets'
+// 注（A5）：0.2.0 侧的 preset 服务包 @deepseek-ai/dsh-agent-preset-registry
+// 已列为 optional peer + devDependency，但这里刻意不做 `import type {}`——
+// 实测其 0.2.0 类型链会把 schemastery 的 Schema/Mode 全局增强进 0.1.x 的
+// 类型检查程序，导致本包 settings schema 声明不再通过 typecheck（两个版本的
+// 类型增强冲突）。运行时无类型需求（0.2.0 上该包提供同名 agentPresets 服务），
+// 保留依赖仅为版本门/锁文件准备，详见 IMPL-STATUS。
 import type { AgentHandle } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
@@ -56,6 +62,7 @@ import {
 import type { AgentExecutor, ExecutionEventBus, RequestContext } from '@a2a-js/sdk/server'
 import { installA2ASettings } from './settings.ts'
 import type { A2ASettings } from './settings.ts'
+import { pluginMessageSource, readToolResult } from './compat.ts'
 
 /** Cordis 插件名 */
 export const name = 'dsh-a2a-server'
@@ -341,10 +348,21 @@ async function resolveSession(
       await attachSessionCwd(ctx, sid, handle.agent.session.header.cwd)
       return { sessionId: sid, handle }
     } catch (e) {
-      // resume 失败（会话已删/损坏）：懒删映射，落到下方新建分支（不抛错）
+      // resume 失败（会话已删/损坏/版本不兼容）：懒删映射，落到下方新建分支（不抛错）。
+      // A9 诊断：打印真实异常（name/code/message/stack 头 3 行）并明确降级语义，
+      // 便于定位 0.2.0 的 v3→v4 resume 失败原因；降级行为不变（删映射 + 新建）。
       contextMap.delete(key)
       void persistContextMap()
-      console.warn('[dsh-a2a-server] contextId resume failed, falling back to new session:', (e as Error)?.message ?? e)
+      const err = e as { name?: string; code?: string; message?: string; stack?: string }
+      const stackHead = String(err.stack ?? '')
+        .split('\n')
+        .slice(0, 3)
+        .join('\n  ')
+      console.warn(
+        `[dsh-a2a-server] contextId resume failed — falling back to a NEW session (contextId mapping dropped)` +
+          `\n  name: ${err.name ?? '(unknown)'}, code: ${err.code ?? '(none)'}, message: ${err.message ?? String(e)}` +
+          (stackHead ? `\n  stack:\n  ${stackHead}` : ''),
+      )
     }
   }
   const newSessionId = SessionId(randomUUID())
@@ -550,7 +568,9 @@ class DshAgentExecutor implements AgentExecutor {
           callId?: string
           reason?: { kind?: string }
           chunk?: { type?: string; blockType?: string; index?: number; text?: string; block?: { type?: string } }
-          message?: { content?: { type?: string; text?: string; toolCallId?: string; content?: { type?: string; text?: string }[] }[] }
+          // v3：content[0] 是 tool-result 包装块（toolCallId + 嵌套 content）；
+          // v4（0.2.0）：toolCallId 在 message 层、content 展平为文本块
+          message?: { toolCallId?: string; content?: { type?: string; text?: string; toolCallId?: string; content?: { type?: string; text?: string }[] }[] }
         } }
         const data = ev.data ?? {}
         switch (ev.type) {
@@ -590,16 +610,15 @@ class DshAgentExecutor implements AgentExecutor {
             onEvent({ kind: 'tool_call', turn: data.turn, step: data.step, name: data.name, arguments: data.arguments })
             return
           case 'tool/result': {
-            // tool/result 不带 name（在 tool/call 里）；结果文本嵌在 tool-result 块
-            // message.content[0].content[0].text；用 toolCallId 关联名称
-            const block = data.message?.content?.[0]
-            const toolCallId = block?.toolCallId
+            // tool/result 不带 name（在 tool/call 里）；用 toolCallId 关联名称。
+            // A2：v3（0.1.5）/v4（0.2.0）双形状读取见 src/compat.ts readToolResult。
+            const read = readToolResult(data)
             onEvent({
               kind: 'tool_result',
               turn: data.turn,
               step: data.step,
-              name: toolCallId !== undefined ? callNames.get(toolCallId) : undefined,
-              text: block?.content?.[0]?.text,
+              name: read.callId !== undefined ? callNames.get(read.callId) : undefined,
+              text: read.text,
             })
             return
           }
@@ -612,7 +631,13 @@ class DshAgentExecutor implements AgentExecutor {
         handle.agent.followup(
           createUserMessage({
             content: [{ type: 'text', text }],
-            source: { kind: 'plugin', plugin: 'dsh-a2a-server' },
+            // A1：source 形状按 dsh 运行时版本选择——0.1.5 为
+            // { kind:'plugin', plugin:'dsh-a2a-server' }，0.2.0 为命名空间化
+            // { kind:'plugin:dsh-a2a-server' }（其 MessageSourceMap 已无 plugin 种类，
+            // 旧形状会让消息进不了 loop、任务静默不执行）。0.2.0 的命名空间 kind
+            // 不在 0.1.x 编译期类型里（本包 devDep 按 0.1.x 做类型检查），故在此
+            // 做一处局部收窄转换；运行时形状由 pluginMessageSource() 保证。
+            source: pluginMessageSource() as unknown as { kind: 'plugin'; plugin: string },
           }),
         )
         await handle.agent.whenIdle()
@@ -667,7 +692,7 @@ function buildAgentCard(host: string, port: number): AgentCard {
       organization: 'deepseek',
       url: 'https://github.com/deepseek-ai',
     },
-    version: '0.2.1',
+    version: '0.3.0',
     capabilities: {
       streaming: true,
       pushNotifications: false,

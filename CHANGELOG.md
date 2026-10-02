@@ -9,6 +9,37 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-02
+
+### Added
+
+- dsh 0.1.5 / 0.2.0 双版本兼容（新增 `src/compat.ts` 集中适配）：
+  - 版本探测：`dshRuntimeVersion()` 经 `createRequire` 读
+    `@deepseek-ai/dsh-agent/package.json` 的真实版本号，失败回落 0.1.5 行为并
+    `console.warn`（不抛）；
+  - 消息 source 双形状：0.2.0 用命名空间化 `kind: 'plugin:dsh-a2a-server'`
+    （其 `MessageSourceMap` 已删除 `plugin` 种类，旧形状会让任务静默不执行），
+    0.1.5 保持 `{kind:'plugin', plugin:'dsh-a2a-server'}`；
+  - tool_result 双形状读取：v4（`message.toolCallId` + 展平 `content`）与 v3
+    （`message.content[0]` 包装块）都能取出 callId 与文本，wire 事件字段名不变；
+  - 设置面板注册改为特性探测三分支：`installSection`（0.1.5 原路径）→
+    `register`+`watch` 保守复刻 → 两者皆无（0.2.0 现状）时响亮 warn 一行、
+    A2A 服务照常；
+  - resume 失败升级为诊断日志（`name`/`code`/`message`/`stack` 头 3 行 + 明确
+    "falling back to a NEW session (contextId mapping dropped)"），降级行为不变。
+- 新增 `tests/compat.test.mjs`（node:test 纯 stdlib，v3/v4 工具结果夹具对照），
+  `pnpm test` 先 `build:host` 再跑测试。
+
+### Changed
+
+- 版本号升至 0.3.0（agent card `version` 同步）。
+- `package.json`：所有 dsh peer 依赖范围追加 `|| ^0.2.0-rc.2`（0.2.0 的版本门
+  新装不再需要 `allow-version` 豁免）；新增 optional peer + devDependency
+  `@deepseek-ai/dsh-agent-preset-registry@0.2.0-rc.2`（0.2.0 的 preset 服务
+  提供方；因其 0.2.0 类型链与 0.1.x 的 schemastery 增强冲突，未做
+  `import type {}` 类型增强，详见文档）。
+- 文档（CONFIGURATION 中英）新增「dsh 0.1.5 / 0.2.0 双版本兼容」章节。
+
 ## [0.2.1] - 2026-09-28
 
 ### Fixed

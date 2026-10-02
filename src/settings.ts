@@ -86,20 +86,77 @@ export function installA2ASettings(
   // 可选依赖：没有 settings 服务的 profile 里回调不运行，插件照常用
   // entry config 工作（graceful degradation）。
   ctx.inject(['settings'], (settingsCtx) => {
+    // A3：注册路径按 settings 服务的实际 seam 特性探测分三支。
+    //  - installSection（0.1.5 现状）：走原路径，行为不变；
+    //  - register（若未来版本只留 provider 级 register）：用 register + watch
+    //    复刻 installSection 的同等语义（保守实现，见该分支注释）；
+    //  - 两者皆无（0.2.0 现状：installSection/register/SettingsScope 全不存在）：
+    //    响亮 warn 一行，面板不可用但 A2A 服务其余功能照常。
+    // typeof 检查用加宽视图（seam）；实际 installSection 调用保留 settings 的
+    // 0.1.x 类型以获得 hooks 的上下文类型。0.2.0 上没有这些方法，加宽视图安全。
+    const settings = settingsCtx.settings
+    const seam = settings as unknown as {
+      installSection?: (...args: unknown[]) => unknown
+      register?: (...args: unknown[]) => unknown
+    }
     try {
-      settingsCtx.settings.installSection(ctx, A2A_SETTINGS_NS, A2ASettingsSchema, config, {
-        // 约束 schema 表达不了的规则：host 显式给出时不得为空串。
-        // port 的 1–65535 整数约束已由 schema 表达，这里不再重复。
-        validate: (value) => {
-          if (value.host !== undefined && value.host.trim().length === 0) {
-            throw new TypeError('[dsh-a2a-server] settings host must not be an empty string')
-          }
-        },
-        setSource: (current) => {
-          source = current
-        },
-        onChange,
-      })
+      if (typeof seam.installSection === 'function') {
+        settings.installSection(ctx, A2A_SETTINGS_NS, A2ASettingsSchema, config, {
+          // 约束 schema 表达不了的规则：host 显式给出时不得为空串。
+          // port 的 1–65535 整数约束已由 schema 表达，这里不再重复。
+          validate: (value) => {
+            if (value.host !== undefined && value.host.trim().length === 0) {
+              throw new TypeError('[dsh-a2a-server] settings host must not be an empty string')
+            }
+          },
+          setSource: (current) => {
+            source = current
+          },
+          onChange,
+        })
+      } else if (typeof seam.register === 'function') {
+        // 保守回退：若 settings 服务只提供 provider 级 register(ns, schema, options)
+        // 而无 installSection 消费方语义，用「register + scope.watch」复刻同等语义
+        // —— options.base = cordis entry config（composition 层），scope.get() 同步
+        // apply 一次 resolved 值（对齐 installSection attach 时的首次 apply），
+        // scope.watch 在每次 commit 后重新 apply。已知差异：installSection 的
+        // setSource 在 provider 分离时会回落 entry config，register 无此钩子，
+        // provider 分离后本插件将停留在最后一次 resolved 值（可接受）。
+        // 注：无任何已发布 dsh 版本命中本分支（0.1.5 有 installSection；
+        // 0.2.0 两者皆无），契约与 0.1.5 SettingsProvider.register 对齐；
+        // 若未来命中且契约不同，注册失败会落入下方 catch 响亮降级，A2A 服务不受影响。
+        const scope = seam.register(A2A_SETTINGS_NS, A2ASettingsSchema, {
+          base: config,
+          validate: (value: A2ASettings) => {
+            if (value.host !== undefined && value.host.trim().length === 0) {
+              throw new TypeError('[dsh-a2a-server] settings host must not be an empty string')
+            }
+          },
+        }) as {
+          get?: () => A2ASettings
+          watch?: (cb: (next: A2ASettings) => void | Promise<void>) => () => void
+        } | undefined
+        if (typeof scope?.watch !== 'function') {
+          throw new TypeError('settings.register() returned no watch()-capable scope')
+        }
+        try {
+          const initial = scope.get?.()
+          if (initial !== undefined) applyResolved(initial)
+        } catch {
+          /* 初始 resolved 读取失败不阻断注册（watch 后续仍会 apply） */
+        }
+        scope.watch((next) => {
+          applyResolved(next)
+        })
+      } else {
+        // 0.2.0 现状：无任何注册缝，面板注册不可行。响亮告警点名原因与后续，
+        // 插件其余功能（A2A 服务）照常；0.2.0 上改配置回落到 cordis.patch.yml /
+        // settings.yaml + 重启，完整移植方案见迁移报告 §A3（Config-as-thunks）。
+        console.warn(
+          '[dsh-a2a-server] dsh 0.2.0 ships no settings-registration seam (installSection/register absent): ' +
+            'the Plugin configuration panel is unavailable on this runtime; see REPORT §A3 for the Config-as-thunks port',
+        )
+      }
     } catch (e) {
       // 对 fails-loud 惯例的有意偏离（决策 C4）：installSection 在注册时就会
       // 解析 stored section，settings.yaml 里若已有坏段会在这里抛错；不接住

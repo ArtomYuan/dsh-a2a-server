@@ -4,7 +4,8 @@
 > （node:http + Bearer 认证 + `@a2a-js/sdk` JsonRpcTransportHandler + AgentExecutor
 > → dsh 会话同步执行）；`message.contextId` 映射到 dsh 会话（复用 + 跨重启 resume）；
 > `preset` 可配置（含 agent-team）；`SendStreamingMessage` 实时推思考/工具/状态/文本
-> 中间事件；contextMap 带 TTL 清理。
+> 中间事件；contextMap 带 TTL 清理。0.3.0 起**同时兼容 dsh 0.1.5 与 0.2.0**
+> （见「dsh 0.1.5 / 0.2.0 双版本兼容」）。
 
 ## 安装（完整途径）
 
@@ -234,6 +235,79 @@ agent-team-profile bundle 的 `cordis.patch.yml` + web-app 的 host 行）。dsh
 （完整 profile 自带；独立 profile 用 `dsh plugin add link:<源码树路径>` 挂接）。
 `agent-team` 预设本体来自 user root（`$DSH_HOME/.agent-presets/agent-team`，
 `includeUserRoot` 默认纳入）。
+
+## dsh 0.1.5 / 0.2.0 双版本兼容
+
+本插件自 0.3.0 起同时支持 dsh 0.1.5-rc.2 与 0.2.0-rc.2 两个运行时
+（`package.json` peer 范围已同时覆盖两版），是将来切换/回退的前提。兼容逻辑
+集中在 `src/compat.ts`，按「特性探测 + 响亮降级」实现。
+
+### 版本探测机制
+
+`dshRuntimeVersion()` 用 `createRequire(import.meta.url)` 解析
+`@deepseek-ai/dsh-agent/package.json`（0.1.x 与 0.2.0 的 `exports` 都导出该
+子路径，沙盒实测），读其 `version` 字段得到真实运行时版本。探测失败返回
+`undefined`（不抛），此后一律回落 0.1.5 行为并 `console.warn` 一行明确警告
+（当前生产是 0.1.5，宁可保住现状也不静默改行为）。
+
+### 消息 source 两种形状（A1）
+
+0.1.5 的 `MessageSourceMap` 有 `plugin` 种类（`{kind:'plugin', plugin:…}`）；
+0.2.0 删除了该种类（只剩 model/tool/system-prompt），插件消息改为命名空间化
+`kind: 'plugin:<name>'`。`pluginMessageSource()` 按上述探测判定返回：
+
+- 0.2.x：`{ kind: 'plugin:dsh-a2a-server' }`
+- 0.1.x 或探测失败：`{ kind: 'plugin', plugin: 'dsh-a2a-server' }`
+
+0.2.0 上若仍发旧形状，消息会**进不了 agent loop、任务静默不执行**（表面
+COMPLETED 但 `(no text output)`），因此这是双版本适配的硬门禁项。
+
+### tool_result 双形状（A2）
+
+`tool/result` 会话事件在 v3/v4 两种会话格式下形状不同，`readToolResult()`
+按 v4 → v3 → `data.callId` 的优先级读取 `{ callId, text }`：
+
+- v4（0.2.0，实测）：`toolCallId` 在 message 层，`content` 已展平为文本块数组；
+- v3（0.1.5）：`message.content[0].toolCallId` +
+  `message.content[0].content[0].text`。
+
+对外 wire 事件字段名不变（仍是 `kind/turn/step/name/text`），工具名沿用
+`tool/call` 记下的 `callId→name` 反查。取不到任何形状时返回双 `undefined`，
+不抛、不改变事件流。
+
+### 设置面板在 0.2.0 的现状与后续（A3）
+
+设置面板注册走官方 settings seam，按运行时特性探测分三支：
+
+1. `settings.installSection` 存在（0.1.5 现状）：走原路径，面板可用；
+2. 只有 `settings.register`：用 register + `scope.watch` 复刻同等语义
+   （保守实现；无任何已发布版本命中此分支）；
+3. 两者皆无（**0.2.0 现状**，其 npm 发行版里 `installSection`/`register`/
+   `SettingsScope` 全部不存在）：响亮 warn 一行（点名原因与后续），面板在
+   0.2.0 上不可用，但 **A2A 服务其余功能照常**。
+
+0.2.0 上改配置回落为编辑 `cordis.patch.yml`（或 `settings.yaml`）+ 重启。完整
+移植方案是中等规模重构：Config 改为 schemastery 声明、字段变成响应式 thunk
+（`config.x.get()`），参照 0.2.0 官方插件的 Config-as-thunks 模式（迁移报告
+§A3）；待做。
+
+### 0.2.0 的版本门与豁免（A4）
+
+0.2.0 新增了运行时兼容门：peer 范围不含已装 dsh 版本的插件会被拒绝加载，报
+`Plugin … is incompatible with dsh 0.2.0-rc.2`。本插件 0.3.0 起 peer 范围已扩
+（`… || ^0.2.0-rc.2`），**新装不再需要豁免**；0.2.0 上还装着旧版（≤0.2.1）
+插件的部署仍需：
+
+```sh
+dsh plugin --profile <p> allow-version dsh-a2a-server@<旧版本> --dsh-version 0.2.0-rc.2 --accept-risk
+```
+
+### 会话续聊（resume）诊断（A9）
+
+0.2.0 用旧 contextId 续聊 v3 会话会失败并回落新建（v3→v4 打开失败）。插件
+保留既有降级行为不变（不抛、删映射、新建），但失败时打印诊断日志：错误
+`name`/`code`/`message` 与 `stack` 头 3 行，并明确注明
+`falling back to a NEW session (contextId mapping dropped)`，供定位用。
 
 ## 设计说明
 

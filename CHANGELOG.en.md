@@ -9,6 +9,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-02
+
+### Added
+
+- dsh 0.1.5 / 0.2.0 dual-version compatibility (new `src/compat.ts`):
+  - version detection: `dshRuntimeVersion()` reads the real version from
+    `@deepseek-ai/dsh-agent/package.json` via `createRequire`; on failure it
+    falls back to 0.1.5 behavior with a `console.warn` (never throws);
+  - dual message source shapes: 0.2.0 uses the namespace-ized
+    `kind: 'plugin:dsh-a2a-server'` (its `MessageSourceMap` dropped the `plugin`
+    kind; the legacy shape would make tasks silently never execute), 0.1.5 keeps
+    `{kind:'plugin', plugin:'dsh-a2a-server'}`;
+  - dual-shape tool_result read: both v4 (`message.toolCallId` + flattened
+    `content`) and v3 (`message.content[0]` wrapper block) yield the callId and
+    text; wire event field names unchanged;
+  - settings panel registration feature-detected into three branches:
+    `installSection` (0.1.5 original path) → `register`+`watch` conservative
+    replica → neither present (0.2.0 today): one loud warn, A2A service keeps
+    working;
+  - resume failures upgraded to a diagnostic log (`name`/`code`/`message`/first
+    3 `stack` lines + explicit "falling back to a NEW session (contextId mapping
+    dropped)"); the degradation behavior is unchanged.
+- New `tests/compat.test.mjs` (node:test, stdlib-only, paired v3/v4 tool-result
+  fixtures); `pnpm test` runs `build:host` first.
+
+### Changed
+
+- Version bumped to 0.3.0 (agent card `version` updated in sync).
+- `package.json`: all dsh peer ranges gained `|| ^0.2.0-rc.2` (0.2.0's version
+  gate no longer needs `allow-version` for fresh installs); added optional peer
+  + devDependency `@deepseek-ai/dsh-agent-preset-registry@0.2.0-rc.2` (0.2.0's
+  preset service provider; its 0.2.0 type chain conflicts with the 0.1.x
+  schemastery augmentations, so no `import type {}` augmentation — see docs).
+- Docs (CONFIGURATION, both languages): new "dsh 0.1.5 / 0.2.0 dual-version
+  compatibility" chapter.
+
 ## [0.2.1] - 2026-09-28
 
 ### Fixed

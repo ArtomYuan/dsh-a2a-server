@@ -6,7 +6,8 @@
 > execution); `message.contextId` maps to a dsh session (reuse + resume across
 > restart); `preset` is configurable (including agent-team); `SendStreamingMessage`
 > pushes thinking / tool / status / text intermediate events in real time; the
-> contextMap performs TTL cleanup.
+> contextMap performs TTL cleanup. Since 0.3.0 it is **compatible with both dsh
+> 0.1.5 and 0.2.0** (see "dsh 0.1.5 / 0.2.0 dual-version compatibility").
 
 ## Installation (full methods)
 
@@ -267,6 +268,89 @@ resolvable (the full profile ships them; a standalone profile mounts them via
 `dsh plugin add link:<source-tree-path>`). The `agent-team` preset itself comes
 from the user root (`$DSH_HOME/.agent-presets/agent-team`, `includeUserRoot`
 includes it by default).
+
+## dsh 0.1.5 / 0.2.0 dual-version compatibility
+
+Since 0.3.0 this plugin supports both the dsh 0.1.5-rc.2 and 0.2.0-rc.2
+runtimes (the `package.json` peer range covers both), as the prerequisite for a
+future switch/rollback. The compatibility logic lives in `src/compat.ts` and
+follows "feature detection + loud degradation".
+
+### Version detection mechanism
+
+`dshRuntimeVersion()` resolves `@deepseek-ai/dsh-agent/package.json` via
+`createRequire(import.meta.url)` (both 0.1.x and 0.2.0 export that subpath,
+verified in the sandbox) and reads its `version` field. On failure it returns
+`undefined` (never throws); everything then falls back to 0.1.5 behavior with a
+single explicit `console.warn` line (production today is 0.1.5 — keep the status
+quo rather than silently change behavior).
+
+### Two message source shapes (A1)
+
+0.1.5's `MessageSourceMap` has a `plugin` kind (`{kind:'plugin', plugin:…}`);
+0.2.0 removed that kind (only model/tool/system-prompt remain) and namespace-izes
+plugin messages as `kind: 'plugin:<name>'`. `pluginMessageSource()` returns,
+per the detection above:
+
+- 0.2.x: `{ kind: 'plugin:dsh-a2a-server' }`
+- 0.1.x or detection failure: `{ kind: 'plugin', plugin: 'dsh-a2a-server' }`
+
+Sending the legacy shape on 0.2.0 makes the message **never enter the agent
+loop — the task silently does not execute** (looks COMPLETED but yields
+`(no text output)`), so this is the hard gate of the dual-version adaptation.
+
+### Dual-shape tool_result (A2)
+
+The `tool/result` session event differs between the v3 and v4 session formats;
+`readToolResult()` reads `{ callId, text }` with precedence v4 → v3 →
+`data.callId`:
+
+- v4 (0.2.0, measured): `toolCallId` on the message level, `content` already
+  flattened into text blocks;
+- v3 (0.1.5): `message.content[0].toolCallId` +
+  `message.content[0].content[0].text`.
+
+Wire event field names are unchanged (`kind/turn/step/name/text`); the tool name
+keeps the existing `callId→name` lookup recorded at `tool/call`. When no shape
+matches it returns both fields as `undefined` — no throw, no event-stream change.
+
+### Settings panel on 0.2.0 — current state and follow-up (A3)
+
+The panel registration goes through the official settings seam, feature-detected
+into three branches:
+
+1. `settings.installSection` exists (0.1.5 today): the original path, panel works;
+2. only `settings.register`: replicate equivalent semantics with register +
+   `scope.watch` (conservative; no published version hits this branch);
+3. neither exists (**0.2.0 today**: its npm release has no `installSection` /
+   `register` / `SettingsScope` at all): one loud warn naming the cause and the
+   follow-up; the panel is unavailable on 0.2.0 but **the rest of the A2A
+   service keeps working**.
+
+On 0.2.0, configuration changes fall back to editing `cordis.patch.yml` (or
+`settings.yaml`) + restart. The full port is a mid-size refactor: Config declared
+in schemastery with reactive-thunk fields (`config.x.get()`), following the
+Config-as-thunks pattern of 0.2.0's own plugins (migration report §A3); pending.
+
+### 0.2.0's version gate and exemption (A4)
+
+0.2.0 added a runtime compatibility gate: a plugin whose peer range does not
+cover the installed dsh version is refused with `Plugin … is incompatible with
+dsh 0.2.0-rc.2`. Since 0.3.0 the peer range is widened (`… || ^0.2.0-rc.2`), so
+**fresh installs no longer need the exemption**; deployments still running an
+old version (≤0.2.1) on 0.2.0 do:
+
+```sh
+dsh plugin --profile <p> allow-version dsh-a2a-server@<old-version> --dsh-version 0.2.0-rc.2 --accept-risk
+```
+
+### Session resume diagnostics (A9)
+
+Resuming a v3 session with an old contextId on 0.2.0 fails and falls back to a
+new session (the v3→v4 open fails). The plugin keeps the existing degradation
+unchanged (no throw, drop the mapping, create new) but now logs a diagnostic:
+the error `name`/`code`/`message` and the first 3 `stack` lines, explicitly
+stating `falling back to a NEW session (contextId mapping dropped)`.
 
 ## Design notes
 
