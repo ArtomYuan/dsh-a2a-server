@@ -15,7 +15,9 @@ import {
   dshRuntimeVersion,
   supportsNamespacedMessageSource,
   pluginMessageSource,
+  pluginMessageSourceFor,
   readToolResult,
+  sourceModeForSessionVersion,
 } from '../lib/compat.js'
 
 // ── supportsNamespacedMessageSource：版本判定 ────────────────────────────
@@ -150,4 +152,17 @@ test('pluginMessageSource: 无法解析的显式版本回落 legacy 形状（不
     kind: 'plugin',
     plugin: 'dsh-a2a-server',
   })
+})
+
+test('sourceModeForSessionVersion: v4 起为 namespaced，v3 及未知为 legacy', () => {
+  assert.equal(sourceModeForSessionVersion(4), 'namespaced')
+  assert.equal(sourceModeForSessionVersion(5), 'namespaced')
+  assert.equal(sourceModeForSessionVersion(3), 'legacy')
+  assert.equal(sourceModeForSessionVersion(0), 'legacy')
+  assert.equal(sourceModeForSessionVersion(undefined), 'legacy')
+})
+
+test('pluginMessageSourceFor: 显式 mode 给出对应形状（重试兜底用）', () => {
+  assert.deepEqual(pluginMessageSourceFor('legacy'), { kind: 'plugin', plugin: 'dsh-a2a-server' })
+  assert.deepEqual(pluginMessageSourceFor('namespaced'), { kind: 'plugin:dsh-a2a-server' })
 })

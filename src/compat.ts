@@ -107,6 +107,33 @@ export interface ToolResultRead {
   text?: string
 }
 
+/** 用户消息 source 的两种形状（显式选择：运行时判定 + 首选未生效时重试兜底） */
+export type PluginMessageSourceMode = 'legacy' | 'namespaced'
+
+/**
+ * 活会话的格式版本 → 消息 source 形状。
+ *
+ * 这是**运行时信号**：dsh 0.2.0 起会话格式为 v4，其 `MessageSourceMap` 只认
+ * 命名空间化 kind；0.1.x 是 v3 + legacy 形状。用活会话 header 的版本判定，
+ * 比读插件自己 node_modules 里可能滞后的 `@deepseek-ai/dsh-agent` 版本可靠。
+ *
+ * @param version - 活会话 header 的 `version`（取不到时为 undefined → legacy）
+ */
+export function sourceModeForSessionVersion(version: number | undefined): PluginMessageSourceMode {
+  return typeof version === 'number' && version >= 4 ? 'namespaced' : 'legacy'
+}
+
+/**
+ * 按显式 mode 构造用户消息 source（不做探测）。
+ *
+ * @param mode - `namespaced`（dsh 0.2.x）或 `legacy`（dsh 0.1.x）
+ */
+export function pluginMessageSourceFor(mode: PluginMessageSourceMode): PluginMessageSource {
+  return mode === 'namespaced'
+    ? { kind: `plugin:${PLUGIN_NAME}` }
+    : { kind: 'plugin', plugin: PLUGIN_NAME }
+}
+
 /** v3/v4 共用的宽容块结构（所有字段可选，运行时形状由上层判定） */
 interface ToolResultBlock {
   type?: string

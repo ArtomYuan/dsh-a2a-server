@@ -62,7 +62,15 @@ import {
 import type { AgentExecutor, ExecutionEventBus, RequestContext } from '@a2a-js/sdk/server'
 import { installA2ASettings } from './settings.ts'
 import type { A2ASettings } from './settings.ts'
-import { pluginMessageSource, readToolResult } from './compat.ts'
+import {
+  pluginMessageSourceFor,
+  readToolResult,
+  sourceModeForSessionVersion,
+  type PluginMessageSourceMode,
+} from './compat.ts'
+
+/** 投递后等待 turn/start 的宽限期；超时即换另一种消息 source 形状重试（A1 兜底） */
+const TURN_START_GRACE_MS = 2000
 
 /** Cordis 插件名 */
 export const name = 'dsh-a2a-server'
@@ -556,6 +564,8 @@ class DshAgentExecutor implements AgentExecutor {
       const textBuf: Record<number, string> = {}
       const thoughtBuf: Record<number, string> = {}
       const callNames = new Map<string, string>()
+      // A1 兜底探测：投递后是否真的驱动出了 turn（见下方 deliver 的重试逻辑）
+      let turnStarted = false
       const dispose = this.ctx.on('session/event', (session, event) => {
         const sid = (session as { header?: { id?: unknown }; id?: unknown }).header?.id
           ?? (session as { id?: unknown }).id
@@ -600,6 +610,8 @@ class DshAgentExecutor implements AgentExecutor {
             return
           }
           case 'turn/start':
+            // A1 兜底探测：turn 真的开始了 → 本次投递的 source 形状已被运行时接受
+            turnStarted = true
             onEvent({ kind: 'turn_start', turn: data.turn, step: data.step })
             return
           case 'turn/end':
@@ -628,18 +640,47 @@ class DshAgentExecutor implements AgentExecutor {
       })
 
       try {
-        handle.agent.followup(
-          createUserMessage({
-            content: [{ type: 'text', text }],
-            // A1：source 形状按 dsh 运行时版本选择——0.1.5 为
-            // { kind:'plugin', plugin:'dsh-a2a-server' }，0.2.0 为命名空间化
-            // { kind:'plugin:dsh-a2a-server' }（其 MessageSourceMap 已无 plugin 种类，
-            // 旧形状会让消息进不了 loop、任务静默不执行）。0.2.0 的命名空间 kind
-            // 不在 0.1.x 编译期类型里（本包 devDep 按 0.1.x 做类型检查），故在此
-            // 做一处局部收窄转换；运行时形状由 pluginMessageSource() 保证。
-            source: pluginMessageSource() as unknown as { kind: 'plugin'; plugin: string },
-          }),
+        // A1：消息 source 形状按**活会话的格式版本**选择（运行时信号，不依赖插件
+        // 自己 node_modules 里可能滞后的 dsh 版本）：v4（dsh 0.2.0 起）用命名空间化
+        // `{ kind: 'plugin:dsh-a2a-server' }`，v3（0.1.x）用 `{ kind: 'plugin', plugin: … }`。
+        // 旧形状在 0.2.0 上会让消息进不了 loop（任务静默不执行），故再加一层兜底：
+        // 首选形状未驱动出 turn/start 时换另一种形状重试一次，仍无则响亮告警。
+        const sessionVersion = (handle.agent.session as unknown as { header?: { version?: unknown } })
+          .header?.version
+        const preferred = sourceModeForSessionVersion(
+          typeof sessionVersion === 'number' ? sessionVersion : undefined,
         )
+
+        const deliver = async (mode: PluginMessageSourceMode): Promise<boolean> => {
+          turnStarted = false
+          handle.agent.followup(
+            createUserMessage({
+              content: [{ type: 'text', text }],
+              // 0.2.0 的命名空间 kind 不在 0.1.x 编译期类型里（本包 devDep 按 0.1.x
+              // 做类型检查），此处做一处局部收窄；运行时形状由 compat 保证。
+              source: pluginMessageSourceFor(mode) as unknown as { kind: 'plugin'; plugin: string },
+            }),
+          )
+          const deadline = Date.now() + TURN_START_GRACE_MS
+          while (!turnStarted && Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 50))
+          }
+          return turnStarted
+        }
+
+        if (!(await deliver(preferred))) {
+          const alternate: PluginMessageSourceMode = preferred === 'namespaced' ? 'legacy' : 'namespaced'
+          console.warn(
+            `[dsh-a2a-server] no turn started within ${TURN_START_GRACE_MS}ms with the ${preferred} ` +
+              `message source shape (session format v${String(sessionVersion)}); retrying with ${alternate}`,
+          )
+          if (!(await deliver(alternate))) {
+            console.warn(
+              '[dsh-a2a-server] no turn started with either message source shape — the task will ' +
+                'produce no assistant output; see CONFIGURATION dsh 0.1.5 / 0.2.0 compatibility',
+            )
+          }
+        }
         await handle.agent.whenIdle()
       } finally {
         dispose()
