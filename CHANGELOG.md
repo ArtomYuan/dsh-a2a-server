@@ -38,7 +38,8 @@
   `@deepseek-ai/dsh-agent-preset-registry@0.2.0-rc.2`（0.2.0 的 preset 服务
   提供方；因其 0.2.0 类型链与 0.1.x 的 schemastery 增强冲突，未做
   `import type {}` 类型增强，详见文档）。
-- 文档（CONFIGURATION 中英）新增「dsh 0.1.5 / 0.2.0 双版本兼容」章节。
+- 文档：CONFIGURATION（中英）新增「dsh 0.1.5 / 0.2.0 双版本兼容」章节；README
+  （中英）新增「版本与支持」矩阵与 0.2.0 设置面板注记。
 
 ## [0.2.1] - 2026-09-28
 

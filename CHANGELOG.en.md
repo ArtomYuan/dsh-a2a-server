@@ -42,8 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   + devDependency `@deepseek-ai/dsh-agent-preset-registry@0.2.0-rc.2` (0.2.0's
   preset service provider; its 0.2.0 type chain conflicts with the 0.1.x
   schemastery augmentations, so no `import type {}` augmentation — see docs).
-- Docs (CONFIGURATION, both languages): new "dsh 0.1.5 / 0.2.0 dual-version
-  compatibility" chapter.
+- Docs: new "dsh 0.1.5 / 0.2.0 dual-version compatibility" chapter in
+  CONFIGURATION (both languages); a "Versions & Support" matrix and a 0.2.0
+  settings-panel note added to the README (both languages).
 
 ## [0.2.1] - 2026-09-28
 

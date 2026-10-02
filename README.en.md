@@ -97,6 +97,16 @@ are not hard-bound; combine them as needed:
 | This library only | A standard A2A interface callable by any A2A client |
 | With hermes-a2a-bridge | Full experience: task submission + live progress + session continuity + single execution |
 
+## Versions & Support
+
+| Plugin version | Supported dsh |
+| --- | --- |
+| **0.3.x** (current) | **0.1.5-rc.2 ∥ 0.2.0-rc.2** — both runtimes in parallel; no plugin change needed |
+| 0.2.x | 0.1.x |
+
+Since 0.3.0, moving between dsh 0.1.5 and 0.2.0 (in either direction) requires no
+plugin change; see [CONFIGURATION.en.md](CONFIGURATION.en.md) for mechanics.
+
 ## Installation
 
 This library is an independent public bundle package (not a package inside the dsh
@@ -146,6 +156,12 @@ changes to the dsh repository and no whitelist are required. It is implemented o
 the official dsh settings seam: the host side registers the `a2a-server` settings
 namespace (schema defined by schemastery), and the browser side provides a settings
 card.
+
+> **On dsh 0.2.0**: the 0.2.0 release provides no settings-registration seam for
+> plugins, so this panel is unavailable on that runtime (the A2A service is
+> unaffected; configuration falls back to `cordis.patch.yml` /
+> `$DSH_HOME/settings.yaml`). On 0.1.5 it works as described.
+> See [CONFIGURATION.en.md](CONFIGURATION.en.md).
 
 ### Configuration layering
 

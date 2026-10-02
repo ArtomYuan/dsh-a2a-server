@@ -87,6 +87,16 @@ Hermes 用户如需完整体验（过程直播 / 会话连续性 / 单执行）�
 | 只用本库 | 标准 A2A 接口，任意 A2A 客户端可直接调用 |
 | 搭配 hermes-a2a-bridge | 完整体验：任务投递 + 过程直播 + 会话连续性 + 单执行 |
 
+## 版本与支持
+
+| 插件版本 | 支持的 dsh |
+| --- | --- |
+| **0.3.x**（当前） | **0.1.5-rc.2 ∥ 0.2.0-rc.2** —— 双版本并行，同一插件无需切换 |
+| 0.2.x | 0.1.x |
+
+0.3.0 起，本插件在 dsh 0.1.5 与 0.2.0 之间升级或回退**无需更换插件**；机制细节见
+[CONFIGURATION.md](CONFIGURATION.md)。
+
 ## 安装说明
 
 本库是独立公开 bundle 包（非 dsh workspace 内包），以 standalone bundle 形态分发。
@@ -131,6 +141,10 @@ dsh Web UI「设置 → 插件 → Plugin configuration」会自动出现 `a2a-s
 只要该插件被 profile 组合即可，无需改 dsh 仓库、无需白名单。实现走 dsh 官方
 settings 能力：host 侧注册 settings 命名空间 `a2a-server`（schema 由 schemastery
 定义），浏览器侧提供一张设置卡。
+
+> **dsh 0.2.0 现状**：0.2.0 发行版未提供插件设置注册缝，该版本上面板不可用
+> （A2A 服务不受影响，配置回落到 `cordis.patch.yml` / `$DSH_HOME/settings.yaml`）；
+> 0.1.5 上行为如常。详见 [CONFIGURATION.md](CONFIGURATION.md)。
 
 ### 配置分层
 
