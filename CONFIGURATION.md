@@ -12,7 +12,16 @@
 本库是独立公开 bundle 包（非 dsh workspace 内包），以 standalone bundle 形态
 分发，三种途径任选。
 
-### 方式 A：GitHub 安装（开发期推荐）
+### 方式 A：npm（推荐）
+
+```sh
+dsh plugin --profile <name> add dsh-a2a-server
+```
+
+官方默认渠道（`dsh plugin add` 不带前缀即从 npm registry 安装）；发布到 npm 时
+自带预构建的 `lib/`，无需 build 授权。需要锁定版本时：`dsh-a2a-server@0.3.0`。
+
+### 方式 B：GitHub 安装（尝鲜尚未发布的改动）
 
 ```sh
 dsh plugin --profile <name> add github:ArtomYuan/dsh-a2a-server#<commit>
@@ -30,14 +39,6 @@ dsh plugin --profile <name> add github:ArtomYuan/dsh-a2a-server#<commit>
 
   然后重跑 `add`。该授权等于**允许在安装时于你的机器上执行本包代码**（在
   agent 沙箱之外）；只对信任来源、且已固定 commit 的包授权。
-
-### 方式 B：npm
-
-```sh
-dsh plugin --profile <name> add dsh-a2a-server
-```
-
-发布到 npm 时自带预构建的 `lib/`，无需 build 授权。
 
 ### 方式 C：tarball
 

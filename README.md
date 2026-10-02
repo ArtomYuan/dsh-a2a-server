@@ -101,19 +101,29 @@ Hermes 用户如需完整体验（过程直播 / 会话连续性 / 单执行）�
 
 本库是独立公开 bundle 包（非 dsh workspace 内包），以 standalone bundle 形态分发。
 
-1. 装进 dsh profile（开发期推荐 GitHub 安装，**必须固定 commit**）：
+1. 装进 dsh profile（二选一）：
 
-   ```sh
-   dsh plugin --profile <name> add github:ArtomYuan/dsh-a2a-server#<commit>
-   ```
+   - **从 npm 安装（推荐）**：
 
-   首次 `add` 会因 pnpm ≥10 默认拒绝 git 依赖的 `prepare` 脚本而失败，按提示把包键
-   加入 profile 的 `pnpm-workspace.yaml` 后重跑：
+     ```sh
+     dsh plugin --profile <name> add dsh-a2a-server
+     ```
 
-   ```yaml
-   allowBuilds:
-     dsh-a2a-server: true
-   ```
+     需要锁定版本时带上版本号：`dsh plugin --profile <name> add dsh-a2a-server@0.3.0`。
+
+   - **从 GitHub 源码安装**（用于尝鲜尚未发布的改动；**必须固定 commit**）：
+
+     ```sh
+     dsh plugin --profile <name> add github:ArtomYuan/dsh-a2a-server#<commit>
+     ```
+
+     首次 `add` 会因 pnpm ≥10 默认拒绝 git 依赖的 `prepare` 脚本而失败，按提示把包键
+     加入 profile 的 `pnpm-workspace.yaml` 后重跑：
+
+     ```yaml
+     allowBuilds:
+       dsh-a2a-server: true
+     ```
 
 2. 在 profile 的 cordis 配置里给 A2A server 插件填最小配置（`port` / `authToken` /
    `preset`）：

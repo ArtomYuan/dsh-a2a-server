@@ -112,21 +112,30 @@ plugin change; see [CONFIGURATION.en.md](CONFIGURATION.en.md) for mechanics.
 This library is an independent public bundle package (not a package inside the dsh
 workspace), distributed as a standalone bundle.
 
-1. Add it to a dsh profile (GitHub install recommended during development; the
-   **commit must be pinned**):
+1. Install it into a dsh profile (choose one):
 
-   ```sh
-   dsh plugin --profile <name> add github:ArtomYuan/dsh-a2a-server#<commit>
-   ```
+   - **From npm (recommended)**:
 
-   The first `add` fails because pnpm >=10 refuses to run a git dependency's
-   `prepare` script; add the package key to the profile's `pnpm-workspace.yaml`
-   as prompted, then rerun:
+     ```sh
+     dsh plugin --profile <name> add dsh-a2a-server
+     ```
 
-   ```yaml
-   allowBuilds:
-     dsh-a2a-server: true
-   ```
+     Pin a version when needed: `dsh plugin --profile <name> add dsh-a2a-server@0.3.0`.
+
+   - **From the GitHub source** (to try unreleased changes; **the commit must be pinned**):
+
+     ```sh
+     dsh plugin --profile <name> add github:ArtomYuan/dsh-a2a-server#<commit>
+     ```
+
+     The first `add` fails because pnpm >=10 refuses to run a git dependency's
+     `prepare` script; add the package key to the profile's `pnpm-workspace.yaml`
+     as prompted, then rerun:
+
+     ```yaml
+     allowBuilds:
+       dsh-a2a-server: true
+     ```
 
 2. Fill the minimal A2A server plugin config (`port` / `authToken` / `preset`) in
    the profile's cordis config:

@@ -14,7 +14,17 @@
 This library is an independent public bundle package (not a package inside the
 dsh workspace), distributed as a standalone bundle. Choose one of three methods.
 
-### Method A: GitHub install (recommended during development)
+### Method A: npm (recommended)
+
+```sh
+dsh plugin --profile <name> add dsh-a2a-server
+```
+
+The official default channel (`dsh plugin add` without a prefix installs from the
+npm registry); published to npm with a prebuilt `lib/`, so no build authorization
+is required. Pin a version when needed: `dsh-a2a-server@0.3.0`.
+
+### Method B: GitHub install (for unreleased changes)
 
 ```sh
 dsh plugin --profile <name> add github:ArtomYuan/dsh-a2a-server#<commit>
@@ -35,14 +45,6 @@ dsh plugin --profile <name> add github:ArtomYuan/dsh-a2a-server#<commit>
   Then rerun `add`. This authorization equals **allowing this package's code to
   run on your machine at install time** (outside the agent sandbox); only grant
   it to trusted sources with a pinned commit.
-
-### Method B: npm
-
-```sh
-dsh plugin --profile <name> add dsh-a2a-server
-```
-
-Published to npm with a prebuilt `lib/`, so no build authorization is required.
 
 ### Method C: tarball
 

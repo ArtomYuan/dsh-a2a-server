@@ -44,7 +44,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   schemastery augmentations, so no `import type {}` augmentation — see docs).
 - Docs: new "dsh 0.1.5 / 0.2.0 dual-version compatibility" chapter in
   CONFIGURATION (both languages); a "Versions & Support" matrix and a 0.2.0
-  settings-panel note added to the README (both languages).
+  settings-panel note added to the README (both languages); installation docs
+  reordered to put npm first (recommended), with GitHub install kept for
+  unreleased changes.
 
 ## [0.2.1] - 2026-09-28
 
