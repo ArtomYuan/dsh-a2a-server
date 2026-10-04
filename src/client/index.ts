@@ -21,7 +21,7 @@ import { A2A_SETTINGS_NS, A2ASettingsCardController } from './card-controller.ts
 import { en, zh } from './locales.ts'
 
 /** Cordis 插件名 */
-export const name = 'dsh-a2a-server'
+export const name = '@artomyuan/dsh-a2a-server'
 
 /** 依赖的服务（settingsScope 走嵌套 inject，见模块注释） */
 export const inject = ['slots', 'locale']

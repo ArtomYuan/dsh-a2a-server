@@ -73,7 +73,7 @@ import {
 const TURN_START_GRACE_MS = 2000
 
 /** Cordis 插件名 */
-export const name = 'dsh-a2a-server'
+export const name = '@artomyuan/dsh-a2a-server'
 
 /** 声明依赖的核心服务（必须与代码里的 ctx.get / 直接调用对齐） */
 export const inject = ['agents', 'agentPresets', 'sessions']

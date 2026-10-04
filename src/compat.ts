@@ -16,7 +16,7 @@ import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 
 /** 插件名（也是 0.2.0 命名空间 source 的 kind 后缀） */
-const PLUGIN_NAME = 'dsh-a2a-server'
+const PLUGIN_NAME = '@artomyuan/dsh-a2a-server'
 
 /** 版本探测缓存哨兵：null = 尚未探测 */
 let probed: string | undefined | null = null
@@ -78,8 +78,8 @@ export type PluginMessageSource = PluginMessageSourceLegacy | PluginMessageSourc
 
 /**
  * 按运行时版本给出用户消息 source 形状：
- *  - 0.2.x：`{ kind: 'plugin:dsh-a2a-server' }`；
- *  - 0.1.x 或版本探测失败：`{ kind: 'plugin', plugin: 'dsh-a2a-server' }`。
+ *  - 0.2.x：`{ kind: 'plugin:@artomyuan/dsh-a2a-server' }`；
+ *  - 0.1.x 或版本探测失败：`{ kind: 'plugin', plugin: '@artomyuan/dsh-a2a-server' }`。
  *
  * 探测失败时回落到 0.1.5 形状并 `console.warn` 一行明确警告（当前生产是
  * 0.1.5，宁可保住现状也不静默改行为）。

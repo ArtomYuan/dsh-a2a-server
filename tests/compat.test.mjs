@@ -129,13 +129,13 @@ test('readToolResult: 任何形状都取不到 → 双 undefined（不抛）', (
 test('pluginMessageSource: 0.1.5 判定给出 legacy 形状', () => {
   assert.deepEqual(pluginMessageSource('0.1.5-rc.2'), {
     kind: 'plugin',
-    plugin: 'dsh-a2a-server',
+    plugin: '@artomyuan/dsh-a2a-server',
   })
 })
 
 test('pluginMessageSource: 0.2.0 判定给出命名空间化形状', () => {
-  assert.deepEqual(pluginMessageSource('0.2.0-rc.2'), { kind: 'plugin:dsh-a2a-server' })
-  assert.deepEqual(pluginMessageSource('0.2.0'), { kind: 'plugin:dsh-a2a-server' })
+  assert.deepEqual(pluginMessageSource('0.2.0-rc.2'), { kind: 'plugin:@artomyuan/dsh-a2a-server' })
+  assert.deepEqual(pluginMessageSource('0.2.0'), { kind: 'plugin:@artomyuan/dsh-a2a-server' })
 })
 
 test('pluginMessageSource: 探测一致性（不抛，形状与显式版本判定一致）', () => {
@@ -150,7 +150,7 @@ test('pluginMessageSource: 探测一致性（不抛，形状与显式版本判�
 test('pluginMessageSource: 无法解析的显式版本回落 legacy 形状（不抛）', () => {
   assert.deepEqual(pluginMessageSource('garbage'), {
     kind: 'plugin',
-    plugin: 'dsh-a2a-server',
+    plugin: '@artomyuan/dsh-a2a-server',
   })
 })
 
@@ -163,6 +163,6 @@ test('sourceModeForSessionVersion: v4 起为 namespaced，v3 及未知为 legacy
 })
 
 test('pluginMessageSourceFor: 显式 mode 给出对应形状（重试兜底用）', () => {
-  assert.deepEqual(pluginMessageSourceFor('legacy'), { kind: 'plugin', plugin: 'dsh-a2a-server' })
-  assert.deepEqual(pluginMessageSourceFor('namespaced'), { kind: 'plugin:dsh-a2a-server' })
+  assert.deepEqual(pluginMessageSourceFor('legacy'), { kind: 'plugin', plugin: '@artomyuan/dsh-a2a-server' })
+  assert.deepEqual(pluginMessageSourceFor('namespaced'), { kind: 'plugin:@artomyuan/dsh-a2a-server' })
 })
