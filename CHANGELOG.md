@@ -9,6 +9,19 @@
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-05
+
+### Fixed
+
+- 修复 `cordis.patch.yml` 的非法 YAML：包名加引号（`name: '@artomyuan/dsh-a2a-server'`）。
+  此前（0.3.0）scoped 包名未加引号，而 `@` 在 YAML 中不能作为裸标量起始符：
+  在 dsh 0.1.5 上导致启动失败（致命解析错误），在 dsh 0.2.0 上导致该 bundle 被静默
+  跳过（插件不加载）。
+
+### Changed
+
+- npm 包名与运行标识自 0.3.0 起为 `@artomyuan/dsh-a2a-server`（文档补记）。
+
 ## [0.3.0] - 2026-10-02
 
 ### Added

@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-05
+
+### Fixed
+
+- Fix invalid YAML in `cordis.patch.yml`: quote the package name
+  (`name: '@artomyuan/dsh-a2a-server'`). In 0.3.0 the scoped name was unquoted,
+  and `@` cannot start a plain scalar in YAML: on dsh 0.1.5 this caused a fatal
+  boot failure (parse error), and on dsh 0.2.0 the bundle was silently skipped
+  (plugin not loaded).
+
+### Changed
+
+- The npm package name and runtime identifiers are `@artomyuan/dsh-a2a-server`
+  since 0.3.0 (documentation note).
+
 ## [0.3.0] - 2026-10-02
 
 ### Added
