@@ -12,4 +12,4 @@
 # must add the `agent-presets` row themselves in their profile patch layer.
 - insert:
     - id: a2a-server
-      name: dsh-a2a-server
+      name: @artomyuan/dsh-a2a-server

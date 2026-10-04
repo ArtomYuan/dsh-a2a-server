@@ -117,10 +117,10 @@ workspace), distributed as a standalone bundle.
    - **From npm (recommended)**:
 
      ```sh
-     dsh plugin --profile <name> add dsh-a2a-server
+     dsh plugin --profile <name> add @artomyuan/dsh-a2a-server
      ```
 
-     Pin a version when needed: `dsh plugin --profile <name> add dsh-a2a-server@0.3.0`.
+     Pin a version when needed: `dsh plugin --profile <name> add @artomyuan/dsh-a2a-server@0.3.0`.
 
    - **From the GitHub source** (to try unreleased changes; **the commit must be pinned**):
 
@@ -134,7 +134,7 @@ workspace), distributed as a standalone bundle.
 
      ```yaml
      allowBuilds:
-       dsh-a2a-server: true
+       @artomyuan/dsh-a2a-server: true
      ```
 
 2. Fill the minimal A2A server plugin config (`port` / `authToken` / `preset`) in

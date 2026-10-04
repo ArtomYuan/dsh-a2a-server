@@ -17,12 +17,12 @@ dsh workspace), distributed as a standalone bundle. Choose one of three methods.
 ### Method A: npm (recommended)
 
 ```sh
-dsh plugin --profile <name> add dsh-a2a-server
+dsh plugin --profile <name> add @artomyuan/dsh-a2a-server
 ```
 
 The official default channel (`dsh plugin add` without a prefix installs from the
 npm registry); published to npm with a prebuilt `lib/`, so no build authorization
-is required. Pin a version when needed: `dsh-a2a-server@0.3.0`.
+is required. Pin a version when needed: `@artomyuan/dsh-a2a-server@0.3.0`.
 
 ### Method B: GitHub install (for unreleased changes)
 
@@ -39,7 +39,7 @@ dsh plugin --profile <name> add github:ArtomYuan/dsh-a2a-server#<commit>
 
   ```yaml
   allowBuilds:
-    dsh-a2a-server: true
+    @artomyuan/dsh-a2a-server: true
   ```
 
   Then rerun `add`. This authorization equals **allowing this package's code to
@@ -49,14 +49,14 @@ dsh plugin --profile <name> add github:ArtomYuan/dsh-a2a-server#<commit>
 ### Method C: tarball
 
 ```sh
-pnpm pack                 # produces dsh-a2a-server-<version>.tgz
-dsh plugin --profile <name> add ./dsh-a2a-server-<version>.tgz
+pnpm pack                 # produces artomyuan-dsh-a2a-server-<version>.tgz
+dsh plugin --profile <name> add ./artomyuan-dsh-a2a-server-<version>.tgz
 ```
 
 ### Uninstall
 
 ```sh
-dsh plugin --profile <name> remove dsh-a2a-server
+dsh plugin --profile <name> remove @artomyuan/dsh-a2a-server
 ```
 
 ## Package structure (bundle)
@@ -343,7 +343,7 @@ dsh 0.2.0-rc.2`. Since 0.3.0 the peer range is widened (`… || ^0.2.0-rc.2`), s
 old version (≤0.2.1) on 0.2.0 do:
 
 ```sh
-dsh plugin --profile <p> allow-version dsh-a2a-server@<old-version> --dsh-version 0.2.0-rc.2 --accept-risk
+dsh plugin --profile <p> allow-version @artomyuan/dsh-a2a-server@<old-version> --dsh-version 0.2.0-rc.2 --accept-risk
 ```
 
 ### Session resume diagnostics (A9)
@@ -371,7 +371,7 @@ stating `falling back to a NEW session (contextId mapping dropped)`.
 
 ## Naming
 
-- Package name: `dsh-a2a-server` (the `name` referenced by the bundle patch for
+- Package name: `@artomyuan/dsh-a2a-server` (the `name` referenced by the bundle patch for
   Node resolution).
 - Patch line logical id: `a2a-server`.
 - Plugin role: `Executor` (corresponds to the A2A `AgentExecutor` mapping, which

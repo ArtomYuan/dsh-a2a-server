@@ -106,10 +106,10 @@ Hermes 用户如需完整体验（过程直播 / 会话连续性 / 单执行）�
    - **从 npm 安装（推荐）**：
 
      ```sh
-     dsh plugin --profile <name> add dsh-a2a-server
+     dsh plugin --profile <name> add @artomyuan/dsh-a2a-server
      ```
 
-     需要锁定版本时带上版本号：`dsh plugin --profile <name> add dsh-a2a-server@0.3.0`。
+     需要锁定版本时带上版本号：`dsh plugin --profile <name> add @artomyuan/dsh-a2a-server@0.3.0`。
 
    - **从 GitHub 源码安装**（用于尝鲜尚未发布的改动；**必须固定 commit**）：
 
@@ -122,7 +122,7 @@ Hermes 用户如需完整体验（过程直播 / 会话连续性 / 单执行）�
 
      ```yaml
      allowBuilds:
-       dsh-a2a-server: true
+       @artomyuan/dsh-a2a-server: true
      ```
 
 2. 在 profile 的 cordis 配置里给 A2A server 插件填最小配置（`port` / `authToken` /

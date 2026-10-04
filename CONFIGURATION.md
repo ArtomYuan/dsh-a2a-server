@@ -15,11 +15,11 @@
 ### 方式 A：npm（推荐）
 
 ```sh
-dsh plugin --profile <name> add dsh-a2a-server
+dsh plugin --profile <name> add @artomyuan/dsh-a2a-server
 ```
 
 官方默认渠道（`dsh plugin add` 不带前缀即从 npm registry 安装）；发布到 npm 时
-自带预构建的 `lib/`，无需 build 授权。需要锁定版本时：`dsh-a2a-server@0.3.0`。
+自带预构建的 `lib/`，无需 build 授权。需要锁定版本时：`@artomyuan/dsh-a2a-server@0.3.0`。
 
 ### 方式 B：GitHub 安装（尝鲜尚未发布的改动）
 
@@ -34,7 +34,7 @@ dsh plugin --profile <name> add github:ArtomYuan/dsh-a2a-server#<commit>
 
   ```yaml
   allowBuilds:
-    dsh-a2a-server: true
+    @artomyuan/dsh-a2a-server: true
   ```
 
   然后重跑 `add`。该授权等于**允许在安装时于你的机器上执行本包代码**（在
@@ -43,14 +43,14 @@ dsh plugin --profile <name> add github:ArtomYuan/dsh-a2a-server#<commit>
 ### 方式 C：tarball
 
 ```sh
-pnpm pack                 # 生成 dsh-a2a-server-<version>.tgz
-dsh plugin --profile <name> add ./dsh-a2a-server-<version>.tgz
+pnpm pack                 # 生成 artomyuan-dsh-a2a-server-<version>.tgz
+dsh plugin --profile <name> add ./artomyuan-dsh-a2a-server-<version>.tgz
 ```
 
 ### 卸载
 
 ```sh
-dsh plugin --profile <name> remove dsh-a2a-server
+dsh plugin --profile <name> remove @artomyuan/dsh-a2a-server
 ```
 
 ## 包结构（bundle）
@@ -300,7 +300,7 @@ COMPLETED 但 `(no text output)`），因此这是双版本适配的硬门禁项
 插件的部署仍需：
 
 ```sh
-dsh plugin --profile <p> allow-version dsh-a2a-server@<旧版本> --dsh-version 0.2.0-rc.2 --accept-risk
+dsh plugin --profile <p> allow-version @artomyuan/dsh-a2a-server@<旧版本> --dsh-version 0.2.0-rc.2 --accept-risk
 ```
 
 ### 会话续聊（resume）诊断（A9）
@@ -323,7 +323,7 @@ dsh plugin --profile <p> allow-version dsh-a2a-server@<旧版本> --dsh-version 
 
 ## 命名
 
-- 包名：`dsh-a2a-server`（bundle 补丁中 `name` 引用此名做 Node 解析）。
+- 包名：`@artomyuan/dsh-a2a-server`（bundle 补丁中 `name` 引用此名做 Node 解析）。
 - 补丁行逻辑 id：`a2a-server`。
 - 插件 role：`Executor`（对应 A2A `AgentExecutor` 映射，把 A2A task 文本投给
   dsh agent 会话执行）。
