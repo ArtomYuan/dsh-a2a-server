@@ -35,7 +35,7 @@
     "build:host": "tsdown --config tsdown.prepare.config.ts",
     "build:client": "tsdown --config tsdown.client.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit",
-    "test": "pnpm run build:host && node --test tests/compat.test.mjs"
+    "test": "pnpm run build:host && node --test tests/compat.test.mjs tests/settings.test.mjs tests/volatile.test.mjs tests/mount-strategy.test.mjs"
   },
   "license": "GPL-3.0",
   "dsh": {
@@ -45,13 +45,14 @@
     "client": {
       "platform": "web",
       "inject": [
-        "@deepseek-ai/dsh-client-ui-settings-plugins"
+        "@deepseek-ai/dsh-client-ui-settings-plugins",
+        "@deepseek-ai/dsh-client-ui-settings"
       ]
     }
   },
   "dependencies": {
     "@a2a-js/sdk": "1.1.0",
-    "@deepseek-ai/schemastery": "^3.18.2"
+    "@deepseek-ai/schemastery": "^3.18.4"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",

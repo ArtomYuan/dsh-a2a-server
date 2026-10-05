@@ -316,7 +316,7 @@ Wire event field names are unchanged (`kind/turn/step/name/text`); the tool name
 keeps the existing `callId→name` lookup recorded at `tool/call`. When no shape
 matches it returns both fields as `undefined` — no throw, no event-stream change.
 
-### Settings panel on 0.2.0 — current state and follow-up (A3)
+### Settings panel on 0.2.0 — derived from the exported Config schema (A3)
 
 The panel registration goes through the official settings seam, feature-detected
 into three branches:
@@ -325,14 +325,66 @@ into three branches:
 2. only `settings.register`: replicate equivalent semantics with register +
    `scope.watch` (conservative; no published version hits this branch);
 3. neither exists (**0.2.0 today**: its npm release has no `installSection` /
-   `register` / `SettingsScope` at all): one loud warn naming the cause and the
-   follow-up; the panel is unavailable on 0.2.0 but **the rest of the A2A
-   service keeps working**.
+   `register` / `SettingsScope` at all): this branch no longer warns "panel
+   unavailable" — it logs an info line describing where the settings area comes
+   from instead.
 
-On 0.2.0, configuration changes fall back to editing `cordis.patch.yml` (or
-`settings.yaml`) + restart. The full port is a mid-size refactor: Config declared
-in schemastery with reactive-thunk fields (`config.x.get()`), following the
-Config-as-thunks pattern of 0.2.0's own plugins (migration report §A3); pending.
+On 0.2.0 the settings area no longer depends on a register seam; it is derived
+from the plugin's exported runtime `Config` schema (`A2AConfigSchema`, i.e.
+`export const Config` in `src/index.ts`): `dsh-settings`' `schema(entry)` reads
+`entry.fiber.runtime.Config` (which must have `toJSON`), and `volatileForm()`
+only collects fields marked `meta.volatile` into the derived form. So this plugin
+marks all 9 config fields `.volatile()`, with the namespace = the cordis row id
+`a2a-server` (same as 0.1.5), and the settings area appears.
+
+#### Behavior differences from 0.1.5 (important)
+
+- **Different write target**: on 0.1.5 the panel writes
+  `$DSH_HOME/settings.yaml` (the user override layer); on 0.2.0 form edits are
+  **over Cordis profile patches**, landing in the profile's
+  **`cordis.patch.yml`**, and take effect via cordis `_reload()`
+  (`patchReload: live`). Do not assume 0.2.0 still writes `settings.yaml`.
+- **`applies: 'live'` vs real timing**: 0.2.0's derived area always reports
+  `applies: 'live'`, but this plugin's `port` / `host` / `contextMapPath`
+  actually need a **restart** (or profile reload) to take effect (the plugin
+  cannot override the service's `applies` field). The remaining fields
+  (provider/model/preset/cwd/authToken/contextMapTtlDays) take effect on the
+  next A2A request.
+
+`authToken` keeps `role('secret')`, which 0.2.0's `redactSecrets` uses for
+write-only (no echo). Runtime config reads must go through `unwrapVolatile` on
+both versions, since `.volatile()` fields validate to `{ get() }` reference
+objects.
+
+#### Browser half: card mount (0.2.0 `plugins.item` / 0.1.5 `settings.plugin.item`)
+
+The settings **card** (browser half) uses two mutually-exclusive slot/service
+contracts on 0.1.5 vs 0.2.0, chosen by the pure `pickClientMount` function
+(`src/client/mount-strategy.ts`) via capability detection — **0.1.5 wins to avoid
+regression**:
+
+| Axis | 0.1.5 (legacy) | 0.2.0 (modern) |
+| --- | --- | --- |
+| Service | `ctx.settingsScope` (`SettingsScopeBinder`) | `ctx.configForms` (`ConfigForms`) |
+| Data plane | `settingsScope.bind({ namespace })` → `SettingsScope`; `settingsScope.describe()` | `configForms.get('a2a-server')` → `ConfigForm`; `configForms.describe()` |
+| Slot | `settings.plugin.item` (`kind:'keyed'`, key = namespace) | `plugins.item` (`kind:'list'`, declared by `dsh-client-ui-plugin-manager`) |
+| Mount guard | nested `ctx.inject(['settingsScope'], …)` | `configForms.whileServed(['a2a-server'], …)` (card mounts only while the Host serves the namespace) |
+
+On 0.2.0 the registration block copies the official
+`dsh-client-ui-settings-{subagent,agent-loop,web-search,shell}` shape:
+`{ name:'plugins.item', id:'a2a-server', order:50, label:()=>t('a2aTitle'),
+locale:NS, inject:()=>controller.inject() }`; the card component switches between
+`view:'summary'` (the official list's one-liner) and `view:'page'` (the full form).
+The 0.1.5 registration block stays unchanged.
+
+Both data planes (`SettingsScope` and `ConfigForm`) expose identical snapshot
+fields (`status/value/base/user/revision/writable/mode`), so the controller
+consumes one local minimal contract `A2AFormSource` (`card-controller.ts`): 0.2.0
+passes `configForms.get` directly, 0.1.5 goes through `legacyScopeSource` (wrapping
+`Promise<void>` into `Promise<boolean>`). Writes carry `revision` (OCC/conflict
+semantics); 0.2.0's `mutate` returns whether the Host accepted (`false` after a
+recovery read), 0.1.5 re-reads `userLayer` after saving, and on conflict the
+snapshot is re-read per contract.
 
 ### 0.2.0's version gate and exemption (A4)
 

@@ -13,11 +13,13 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   dshRuntimeVersion,
+  isVolatile,
   supportsNamespacedMessageSource,
   pluginMessageSource,
   pluginMessageSourceFor,
   readToolResult,
   sourceModeForSessionVersion,
+  unwrapVolatile,
 } from '../lib/compat.js'
 
 // ── supportsNamespacedMessageSource：版本判定 ────────────────────────────
@@ -165,4 +167,48 @@ test('sourceModeForSessionVersion: v4 起为 namespaced，v3 及未知为 legacy
 test('pluginMessageSourceFor: 显式 mode 给出对应形状（重试兜底用）', () => {
   assert.deepEqual(pluginMessageSourceFor('legacy'), { kind: 'plugin', plugin: '@artomyuan/dsh-a2a-server' })
   assert.deepEqual(pluginMessageSourceFor('namespaced'), { kind: 'plugin:@artomyuan/dsh-a2a-server' })
+})
+
+// ── unwrapVolatile：volatile 引用对象解包（纯函数、双版本都要） ──────────
+
+test('unwrapVolatile: plain 标量原样返回（幂等）', () => {
+  assert.equal(unwrapVolatile(42), 42)
+  assert.equal(unwrapVolatile('str'), 'str')
+  assert.equal(unwrapVolatile(true), true)
+  assert.equal(unwrapVolatile(null), null)
+})
+
+test('unwrapVolatile: undefined 原样返回', () => {
+  assert.equal(unwrapVolatile(undefined), undefined)
+})
+
+test('unwrapVolatile: 引用对象取 get()', () => {
+  assert.equal(unwrapVolatile({ get: () => 'value' }), 'value')
+})
+
+test('unwrapVolatile: 引用对象内嵌引用对象递归 get()', () => {
+  assert.equal(unwrapVolatile({ get: () => ({ get: () => 'inner' }) }), 'inner')
+})
+
+test('unwrapVolatile: 嵌套对象/数组逐层解包，普通值不丢', () => {
+  const nested = {
+    port: { get: () => 8092 },
+    deep: { host: { get: () => '127.0.0.1' } },
+    list: [{ get: () => 'a' }, 2, null],
+  }
+  assert.deepEqual(unwrapVolatile(nested), {
+    port: 8092,
+    deep: { host: '127.0.0.1' },
+    list: ['a', 2, null],
+  })
+})
+
+test('isVolatile: 结构判定（typeof v?.get === "function"）', () => {
+  assert.equal(isVolatile({ get: () => 1 }), true)
+  assert.equal(isVolatile({ get: 1 }), false)
+  assert.equal(isVolatile(null), false)
+  assert.equal(isVolatile(undefined), false)
+  assert.equal(isVolatile('x'), false)
+  assert.equal(isVolatile([1, 2]), false)
+  assert.equal(isVolatile(42), false)
 })

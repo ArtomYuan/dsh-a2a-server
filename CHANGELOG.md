@@ -9,6 +9,36 @@
 
 ## [Unreleased]
 
+### Added
+
+- dsh 0.2.0 设置区恢复：插件新增运行时 `Config` schema（`A2AConfigSchema`，9 个
+  字段全部 `.volatile()`），0.2.0 的 settings 服务据此派生 `a2a-server` 设置区
+  （命名空间与 0.1.5 一致）；`authToken` 保持 `role('secret')` 只写不显。
+  `@deepseek-ai/schemastery` 提升至 `^3.18.4`（`.volatile()` 支持的最低版本）。
+- 新增解包读取器：`src/compat.ts` 的 `isVolatile`/`unwrapVolatile`（纯函数零
+  依赖）与 `src/settings.ts` 的 `readSettingValue`；运行时读配置统一经
+  `unwrapVolatile` 解包（导出 volatile schema 后，双版本的 config 字段都会变成
+  `{ get() }` 引用对象）。
+- 新增 `tests/settings.test.mjs`：`Config` 校验行为（未知键保留 / 默认值 /
+  `role('secret')` / volatile vs plain）与**导出契约测试**（`lib/index.js` 的
+  `Config` 有 `toJSON`，复刻 0.2.0 `volatileForm` 收集逻辑能收集到全部 9 个字段）。
+- 浏览器半边设置卡片迁移到 0.2.0：新增 `src/client/mount-strategy.ts` 的纯函数
+  `pickClientMount`（0.1.5 优先、能力探测、互斥挂载）与 `card-controller.ts` 的
+  统一表单后端 `A2AFormSource`（0.1.5 `SettingsScope` 经 `legacyScopeSource` 适配、
+  0.2.0 直接走 `ConfigForm`）。0.2.0 上卡片挂 `plugins.item` 槽 + `configForms` +
+  `whileServed(['a2a-server'])`（照抄官方 subagent/agent-loop 注册形状，`order:50`），
+  0.1.5 仍走 `settings.plugin.item` + `settingsScope`（行为不变）；`dsh.client.inject`
+  增补 `@deepseek-ai/dsh-client-ui-settings`。新增 `tests/mount-strategy.test.mjs`。
+
+### Changed
+
+- 0.2.0 无 `installSection`/`register` 分支：从响亮 `console.warn`（「面板不可用」）
+  改为信息级日志，说明设置区由导出的 `Config` schema 派生。
+- 文档：CONFIGURATION / README（中英）增补「0.2.0 设置区」小节，明确与 0.1.5 的
+  两点行为差异——0.2.0 表单编辑落在 profile 的 `cordis.patch.yml`（非
+  `settings.yaml`，靠 reload 生效）；派生区一律报 `applies: 'live'`，但
+  `port`/`host`/`contextMapPath` 实际需重启。
+
 ## [0.3.1] - 2026-10-05
 
 ### Fixed

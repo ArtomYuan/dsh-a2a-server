@@ -9,8 +9,10 @@ import { defineConfig } from 'tsdown'
 // package. `pnpm run typecheck` (P0+) owns type checking.
 // `src/compat.ts` 单独成 entry：版本探测/双形状适配是纯 stdlib 模块，
 // 以 lib/compat.js 独立产物供 tests/ 直接单测，不必加载整个插件图。
+// `src/client/mount-strategy.ts` 同理：客户端设置卡挂载策略的纯函数，单独成
+// lib/client/mount-strategy.js 供 tests/mount-strategy.test.mjs 在无 DOM 的 node 里单测。
 export default defineConfig({
-  entry: ['src/index.ts', 'src/compat.ts'],
+  entry: ['src/index.ts', 'src/compat.ts', 'src/client/mount-strategy.ts'],
   outDir: 'lib',
   format: ['esm'],
   platform: 'node',

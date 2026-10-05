@@ -12,7 +12,6 @@ import type { SettingsNamespaceView, SettingsPathOpView } from '@deepseek-ai/dsh
 import type {
   SettingsDescribeFace,
   SettingsScope,
-  SettingsScopeSnapshot,
 } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { HostObservable } from '@deepseek-ai/dsh-client-ui-slots'
 
@@ -33,6 +32,73 @@ export interface A2ASettingsValue {
   cwd?: string
   contextMapPath?: string
   contextMapTtlDays?: number
+}
+
+/**
+ * 统一表单后端的快照契约：0.1.5 `SettingsScopeSnapshot<T>` 与 0.2.0
+ * `ConfigFormSnapshot<T>` 字段完全一致（status/value/base/user/revision/
+ * writable/mode），此处本地声明一份最小结构，避免引入 0.2.0 devDep。
+ */
+export interface A2AFormSnapshot<T> {
+  status: 'loading' | 'ready' | 'unavailable'
+  value: T | undefined
+  base: unknown
+  user: unknown
+  revision: number | undefined
+  writable: boolean
+  mode: 'host' | 'memory'
+}
+
+/**
+ * 统一表单后端的写读契约：0.1.5 `SettingsScope<T>` 与 0.2.0 `ConfigForm<T>`
+ * 的交集面。写方法统一返回 `Promise<boolean>`（Host 是否接受）：0.2.0 原生如此；
+ * 0.1.5 经 {@link legacyScopeSource} 适配（`Promise<void>` 包成 boolean）。
+ */
+export interface A2AFormSource<T> {
+  getSnapshot(): A2AFormSnapshot<T>
+  subscribe(listener: () => void): () => void
+  mutate(ops: readonly SettingsPathOpView[], expectedRevision?: number): Promise<boolean>
+  set(field: string, value: unknown): Promise<boolean>
+  unset(field: string): Promise<boolean>
+}
+
+/**
+ * 0.1.5 `SettingsScope` → {@link A2AFormSource} 适配器：把写方法的
+ * `Promise<void>`（被拒时静默 recover 重读，不抛）包装成 `Promise<boolean>`。
+ * 「被拒但已 recover」的情况由控制器保存后的 {@link A2ASettingsCardController.verifyLanded}
+ * 读回 userLayer 判定，保持既有 0.1.5 行为不变；wire 层异常返回 false。
+ */
+export function legacyScopeSource(
+  scope: SettingsScope<A2ASettingsValue>,
+): A2AFormSource<A2ASettingsValue> {
+  return {
+    getSnapshot: () => scope.getSnapshot(),
+    subscribe: (listener) => scope.subscribe(listener),
+    mutate: async (ops, revision) => {
+      try {
+        await scope.mutate(ops, revision)
+        return true
+      } catch {
+        return false
+      }
+    },
+    set: async (field, value) => {
+      try {
+        await scope.set(field, value)
+        return true
+      } catch {
+        return false
+      }
+    },
+    unset: async (field) => {
+      try {
+        await scope.unset(field)
+        return true
+      } catch {
+        return false
+      }
+    },
+  }
 }
 
 /** 卡片上一个普通字段的渲染状态 */
@@ -181,18 +247,19 @@ export class A2ASettingsCardController {
   private envToken = false
 
   /**
-   * @param scope - 绑定的 `a2a-server` settings scope
+   * @param source - `a2a-server` 的统一表单后端（0.1.5 经 legacyScopeSource 适配，
+   *   0.2.0 直接传 configForms.get 的结果）
    * @param describe - 共享 describe 镜像（读 secret 的 set 状态）
    * @param ctx - 卡片所在 fiber 的 context（用于可选地注入 credentials Remote）
    */
   constructor(
-    private readonly scope: SettingsScope<A2ASettingsValue>,
+    private readonly source: A2AFormSource<A2ASettingsValue>,
     describe: SettingsDescribeFace,
     ctx: ClientContext,
   ) {
     this.describe = describe
     this.store = new CardStore(this.projection())
-    scope.subscribe(() => { this.publish() })
+    source.subscribe(() => { this.publish() })
     describe.subscribe(() => { this.publish() })
     // 环境令牌徽章的可选数据源：credentials 域能描述 process.env 里的
     // A2A_SERVER_TOKEN（只读探测，令牌本身不回传）。Remote 缺失时徽章不显示。
@@ -219,8 +286,8 @@ export class A2ASettingsCardController {
   }
 
   /** 保存当前 revision 快照里的 scope 数据 */
-  private snapshot(): SettingsScopeSnapshot<A2ASettingsValue> {
-    return this.scope.getSnapshot()
+  private snapshot(): A2AFormSnapshot<A2ASettingsValue> {
+    return this.source.getSnapshot()
   }
 
   /** 用户层（原始存储段）或 undefined */
@@ -416,20 +483,10 @@ export class A2ASettingsCardController {
     this.publish()
     let landed = true
     try {
-      await this.scope.mutate(plan.ops, revision)
-      const user = this.userLayer()
-      for (const op of plan.ops) {
-        if (op.op === 'set') {
-          if (op.path[0] === 'authToken') {
-            // 令牌明文不回传，唯一可验证的事实是「解析值已设置」
-            landed = this.secretConfigured() && landed
-          } else {
-            landed = user?.[op.path[0]!] === op.value && landed
-          }
-        } else {
-          landed = (user === undefined || !Object.hasOwn(user, op.path[0]!)) && landed
-        }
-      }
+      // 0.2.0 的 mutate 返回 Host 是否接受（false = 拒绝后已 recover 重读）；
+      // 0.1.5 经适配器恒为 true（拒绝时静默 recover），此时靠下面的回读验证判定。
+      const accepted = await this.source.mutate(plan.ops, revision)
+      landed = accepted && this.verifyLanded(plan.ops)
     } catch {
       // wire 层异常（连接断开等）与拒绝同归 failed；scope 侧会触发恢复读取
       landed = false
@@ -446,10 +503,38 @@ export class A2ASettingsCardController {
     this.publish()
   }
 
+  /**
+   * 写后回读验证：host 是唯一权威，逐 op 核对 userLayer（或 secret 的 set 标志）
+   * 是否已落到期望状态。全部落定返回 true。
+   */
+  private verifyLanded(ops: readonly SettingsPathOpView[]): boolean {
+    const user = this.userLayer()
+    let landed = true
+    for (const op of ops) {
+      if (op.op === 'set') {
+        if (op.path[0] === 'authToken') {
+          // 令牌明文不回传，唯一可验证的事实是「解析值已设置」
+          landed = this.secretConfigured() && landed
+        } else {
+          landed = user?.[op.path[0]!] === op.value && landed
+        }
+      } else {
+        landed = (user === undefined || !Object.hasOwn(user, op.path[0]!)) && landed
+      }
+    }
+    return landed
+  }
+
   /** 立即清除一个字段的用户层覆盖（回落配置层） */
   private async clear(field: string): Promise<void> {
     try {
-      await this.scope.unset(field)
+      const accepted = await this.source.unset(field)
+      // 0.2.0 拒绝（false）时显式置 failed；0.1.5 适配器恒为 true（拒绝时静默
+      // recover），行为与既有实现一致（不额外置 failed）。
+      if (!accepted) {
+        this.failed = true
+        this.publish()
+      }
     } catch {
       this.failed = true
       this.publish()

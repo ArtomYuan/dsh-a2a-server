@@ -60,12 +60,13 @@ import {
   ServerCallContext,
 } from '@a2a-js/sdk/server'
 import type { AgentExecutor, ExecutionEventBus, RequestContext } from '@a2a-js/sdk/server'
-import { installA2ASettings } from './settings.ts'
+import { installA2ASettings, A2AConfigSchema, A2ASettingsSchema } from './settings.ts'
 import type { A2ASettings } from './settings.ts'
 import {
   pluginMessageSourceFor,
   readToolResult,
   sourceModeForSessionVersion,
+  unwrapVolatile,
   type PluginMessageSourceMode,
 } from './compat.ts'
 
@@ -78,27 +79,21 @@ export const name = '@artomyuan/dsh-a2a-server'
 /** 声明依赖的核心服务（必须与代码里的 ctx.get / 直接调用对齐） */
 export const inject = ['agents', 'agentPresets', 'sessions']
 
-/** 插件配置 */
-export interface Config {
-  /** 监听端口；缺省探测 8092/8093/8094 首个空闲端口 */
-  port?: number
-  /** 监听地址（默认 127.0.0.1，仅本机） */
-  host?: string
-  /** Bearer token（设置后所有请求必须带 Authorization: Bearer <token>） */
-  authToken?: string
-  /** 后端 provider（默认 deepseek-official） */
-  provider?: string
-  /** 执行任务的模型（默认 deepseek-v4-flash；空串 = 跟随 dsh 用户/默认设置） */
-  model?: string
-  /** 挂载的 agent preset（默认 standard；可设 agent-team 等） */
-  preset?: string
-  /** 任务工作目录（默认进程 cwd） */
-  cwd?: string
-  /** contextId→session 映射持久文件路径（默认 $DSH_HOME/storages/a2a-context-map.json） */
-  contextMapPath?: string
-  /** contextId→session 映射条目 TTL 天数（默认 7，超期条目在加载/写入时清理） */
-  contextMapTtlDays?: number
-}
+/** 插件配置（运行时 schema + 同名类型导出） */
+export const Config = A2AConfigSchema
+/**
+ * plain schema（0.1.5 `installSection` 用）。随 `Config` 一并导出，供测试与
+ * 消费方对照：其字段为 plain 标量（无 `.volatile()`），与 `Config` 的 volatile
+ * 引用对象输出形成对照。
+ */
+export const SettingsSchema = A2ASettingsSchema
+/**
+ * 插件配置类型（plain 形状）。0.2.0 的 settings 服务用运行时 `Config` schema
+ * 派生设置区，cordis 在双版本都用它解析 entry config；解析后每个字段会变成
+ * volatile 引用对象（`{ get() }`），故运行时读配置一律经 `unwrapVolatile` 解包。
+ * 本类型保持 plain 标量形状以免破坏既有引用与类型声明。
+ */
+export type Config = A2ASettings
 
 /** 逐请求携带执行模式（同步 / 流式）：HTTP 层写入，execute 内读取 */
 const executionMode = new AsyncLocalStorage<{ streaming: boolean }>()
@@ -768,15 +763,19 @@ function buildAgentCard(host: string, port: number): AgentCard {
  * 行为与面板显示一致。
  */
 function applyResolvedConfig(resolved: A2ASettings): void {
-  runtimeConfig.provider = resolved.provider ?? 'deepseek-official'
-  runtimeConfig.model = resolved.model ?? 'deepseek-v4-flash'
-  runtimeConfig.preset = resolved.preset ?? 'standard'
-  runtimeConfig.cwd = resolved.cwd ?? ''
-  runtimeConfig.authToken = resolved.authToken ?? ''
-  runtimeConfig.port = resolved.port
-  runtimeConfig.host = resolved.host
-  runtimeConfig.contextMapPath = resolved.contextMapPath
-  runtimeConfig.contextMapTtlDays = resolved.contextMapTtlDays ?? 7
+  // 导出运行时 Config（volatile）后，双版本的 entry config 字段都会变成
+  // `{ get() }` 引用对象（0.1.5 的 settings onChange 则是 plain 标量）；统一
+  // 深解包后按 plain 形状读取，缺失字段回落安全默认（不做真值守卫）。
+  const r = unwrapVolatile(resolved) as A2ASettings
+  runtimeConfig.provider = r.provider ?? 'deepseek-official'
+  runtimeConfig.model = r.model ?? 'deepseek-v4-flash'
+  runtimeConfig.preset = r.preset ?? 'standard'
+  runtimeConfig.cwd = r.cwd ?? ''
+  runtimeConfig.authToken = r.authToken ?? ''
+  runtimeConfig.port = r.port
+  runtimeConfig.host = r.host
+  runtimeConfig.contextMapPath = r.contextMapPath
+  runtimeConfig.contextMapTtlDays = r.contextMapTtlDays ?? 7
   // 环境变量是最简外部通道，优先级最高（settings 写入也压不过它）
   if (process.env.A2A_SERVER_TOKEN) runtimeConfig.authToken = process.env.A2A_SERVER_TOKEN
   // 每次配置被应用时打一行不含任何密钥的信息日志（authToken 只报有无）

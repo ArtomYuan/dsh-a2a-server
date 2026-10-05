@@ -166,11 +166,12 @@ the official dsh settings seam: the host side registers the `a2a-server` setting
 namespace (schema defined by schemastery), and the browser side provides a settings
 card.
 
-> **On dsh 0.2.0**: the 0.2.0 release provides no settings-registration seam for
-> plugins, so this panel is unavailable on that runtime (the A2A service is
-> unaffected; configuration falls back to `cordis.patch.yml` /
-> `$DSH_HOME/settings.yaml`). On 0.1.5 it works as described.
-> See [CONFIGURATION.en.md](CONFIGURATION.en.md).
+> **On dsh 0.2.0**: 0.2.0 has no `installSection`/`register` seam; the settings
+> area is instead derived from the plugin's exported runtime `Config` schema
+> (namespace still `a2a-server`). Differences from 0.1.5: form edits land in the
+> profile's **`cordis.patch.yml`** (not `settings.yaml`), and the derived area
+> always reports `applies: 'live'` even though `port`/`host`/`contextMapPath`
+> actually require a restart. See [CONFIGURATION.en.md](CONFIGURATION.en.md).
 
 ### Configuration layering
 

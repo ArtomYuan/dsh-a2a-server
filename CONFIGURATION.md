@@ -276,7 +276,7 @@ COMPLETED 但 `(no text output)`），因此这是双版本适配的硬门禁项
 `tool/call` 记下的 `callId→name` 反查。取不到任何形状时返回双 `undefined`，
 不抛、不改变事件流。
 
-### 设置面板在 0.2.0 的现状与后续（A3）
+### 设置面板在 0.2.0：由导出的 Config schema 派生（A3）
 
 设置面板注册走官方 settings seam，按运行时特性探测分三支：
 
@@ -284,13 +284,56 @@ COMPLETED 但 `(no text output)`），因此这是双版本适配的硬门禁项
 2. 只有 `settings.register`：用 register + `scope.watch` 复刻同等语义
    （保守实现；无任何已发布版本命中此分支）；
 3. 两者皆无（**0.2.0 现状**，其 npm 发行版里 `installSection`/`register`/
-   `SettingsScope` 全部不存在）：响亮 warn 一行（点名原因与后续），面板在
-   0.2.0 上不可用，但 **A2A 服务其余功能照常**。
+   `SettingsScope` 全部不存在）：本分支不再告警「面板不可用」，改为信息级
+   日志说明去向。
 
-0.2.0 上改配置回落为编辑 `cordis.patch.yml`（或 `settings.yaml`）+ 重启。完整
-移植方案是中等规模重构：Config 改为 schemastery 声明、字段变成响应式 thunk
-（`config.x.get()`），参照 0.2.0 官方插件的 Config-as-thunks 模式（迁移报告
-§A3）；待做。
+0.2.0 的设置区**不再依赖 register seam**，而是由插件导出的运行时 `Config`
+schema（`A2AConfigSchema`，即 `src/index.ts` 的 `export const Config`）派生：
+`dsh-settings` 的 `schema(entry)` 取 `entry.fiber.runtime.Config`（要求有
+`toJSON`），`volatileForm()` 只收集带 `meta.volatile` 的字段进派生表单。因此本
+插件把 9 个配置字段全部 `.volatile()` 化，命名空间 = cordis 行 id `a2a-server`
+（与 0.1.5 一致），设置区即可出现。
+
+#### 与 0.1.5 的行为差异（重要）
+
+- **写入落点不同**：0.1.5 的面板写入 `$DSH_HOME/settings.yaml`（用户覆盖层）；
+  0.2.0 的表单编辑是 **over Cordis profile patches**，落到 **profile 的
+  `cordis.patch.yml`**，靠 cordis `_reload()`（`patchReload: live`）生效。不要
+  误以为 0.2.0 仍写 `settings.yaml`。
+- **`applies: 'live'` 与真实生效时机不一致**：0.2.0 的派生区一律报
+  `applies: 'live'`，但本插件的 `port` / `host` / `contextMapPath` 实际需
+  **重启**（或重新加载 profile）才生效（插件无法改写服务的 `applies` 字段）。
+  其余字段（provider/model/preset/cwd/authToken/contextMapTtlDays）下一次 A2A
+  请求即生效。
+
+`authToken` 保持 `role('secret')`，0.2.0 的 `redactSecrets` 据此只写不显。
+运行时读配置在双版本都必须经 `unwrapVolatile` 解包（`.volatile()` 字段的校验
+输出是 `{ get() }` 引用对象）。
+
+#### 浏览器半边：卡片挂载（0.2.0 `plugins.item` / 0.1.5 `settings.plugin.item`）
+
+设置**卡片**（浏览器半边）在 0.1.5 与 0.2.0 走两套互斥的槽/服务契约，由纯函数
+`pickClientMount`（`src/client/mount-strategy.ts`）按能力探测决策，**0.1.5 优先
+保证不回归**：
+
+| 维度 | 0.1.5（legacy） | 0.2.0（modern） |
+| --- | --- | --- |
+| 服务 | `ctx.settingsScope`（`SettingsScopeBinder`） | `ctx.configForms`（`ConfigForms`） |
+| 数据面 | `settingsScope.bind({ namespace })` → `SettingsScope`；`settingsScope.describe()` | `configForms.get('a2a-server')` → `ConfigForm`；`configForms.describe()` |
+| 槽 | `settings.plugin.item`（`kind:'keyed'`，key=命名空间） | `plugins.item`（`kind:'list'`，由 `dsh-client-ui-plugin-manager` 声明） |
+| 挂载守卫 | 嵌套 `ctx.inject(['settingsScope'], …)` | `configForms.whileServed(['a2a-server'], …)`（Host 确实提供该命名空间时才挂卡） |
+
+0.2.0 的注册块照抄官方 `dsh-client-ui-settings-{subagent,agent-loop,web-search,shell}`
+的形状：`{ name:'plugins.item', id:'a2a-server', order:50, label:()=>t('a2aTitle'),
+locale:NS, inject:()=>controller.inject() }`；卡片组件在 `view:'summary'`（官方列表
+的一行简介）与 `view:'page'`（整页表单）间切换。0.1.5 的注册块保持原样不变。
+
+两套数据面（`SettingsScope` 与 `ConfigForm`）的快照字段完全一致
+（`status/value/base/user/revision/writable/mode`），控制器消费一个统一的本地最小
+契约 `A2AFormSource`（`card-controller.ts`）：0.2.0 直接传 `configForms.get` 的结果，
+0.1.5 经 `legacyScopeSource` 适配（`Promise<void>` 包成 `Promise<boolean>`）。写操作
+都带 `revision`（OCC/冲突语义），0.2.0 的 `mutate` 返回 Host 是否接受（`false` 时已
+recover 重读），0.1.5 靠保存后回读 `userLayer` 判定，冲突时按契约重读快照。
 
 ### 0.2.0 的版本门与豁免（A4）
 

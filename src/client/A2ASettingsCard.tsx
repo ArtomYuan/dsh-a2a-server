@@ -32,6 +32,11 @@ export interface A2ASettingsCardProps {
   discard: () => void
   clearOverride: (field: A2AEditableField) => void
   clearAuthToken: () => void
+  /**
+   * 0.2.0 `plugins.item` 槽的 owner 视图：`summary` 渲染卡片一栏（标题下的一行
+   * 简介），`page` 渲染完整表单。0.1.5 的 `settings.plugin.item` 槽不传此 prop。
+   */
+  view?: 'summary' | 'page'
 }
 
 // ── 内联样式（无 CSS Modules 构建链，观感对齐官方 PluginCard）─────────
@@ -314,6 +319,10 @@ export function A2ASettingsCard(props: A2ASettingsCardProps): ReactNode {
     saveStarted.current = false
     if (!state.dirty && !state.failed) setOpen(false)
   }, [state.dirty, state.failed, state.saving])
+
+  // 0.2.0 plugins.item 的 summary 视图：只渲染一行简介（官方 SubagentCard 同款），
+  // 整页表单在 view === 'page'（或 0.1.5 无 view prop）时走下方完整渲染。
+  if (props.view === 'summary') return t('a2aDescription')
 
   const liveFields: A2AEditableField[] = ['provider', 'model', 'preset', 'cwd', 'contextMapTtlDays']
   const restartFields: A2AEditableField[] = ['port', 'host', 'contextMapPath']

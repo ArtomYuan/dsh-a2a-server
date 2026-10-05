@@ -152,9 +152,11 @@ dsh Web UI「设置 → 插件 → Plugin configuration」会自动出现 `a2a-s
 settings 能力：host 侧注册 settings 命名空间 `a2a-server`（schema 由 schemastery
 定义），浏览器侧提供一张设置卡。
 
-> **dsh 0.2.0 现状**：0.2.0 发行版未提供插件设置注册缝，该版本上面板不可用
-> （A2A 服务不受影响，配置回落到 `cordis.patch.yml` / `$DSH_HOME/settings.yaml`）；
-> 0.1.5 上行为如常。详见 [CONFIGURATION.md](CONFIGURATION.md)。
+> **dsh 0.2.0 现状**：0.2.0 无 `installSection`/`register` 注册缝，设置区改由插件
+> 导出的运行时 `Config` schema 派生（命名空间仍为 `a2a-server`）。与 0.1.5 的差异：
+> 表单编辑落在 **profile 的 `cordis.patch.yml`**（非 `settings.yaml`），且派生区一律报
+> `applies: 'live'`，但 `port`/`host`/`contextMapPath` 实际需重启。详见
+> [CONFIGURATION.md](CONFIGURATION.md)。
 
 ### 配置分层
 

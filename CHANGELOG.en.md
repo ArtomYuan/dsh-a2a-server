@@ -9,6 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- dsh 0.2.0 settings area restored: the plugin now exports a runtime `Config`
+  schema (`A2AConfigSchema`, all 9 fields `.volatile()`), from which 0.2.0's
+  settings service derives the `a2a-server` settings area (namespace identical to
+  0.1.5); `authToken` keeps `role('secret')` for write-only. `@deepseek-ai/schemastery`
+  bumped to `^3.18.4` (the minimum version with `.volatile()` support).
+- New unwrap readers: `isVolatile`/`unwrapVolatile` in `src/compat.ts` (pure,
+  zero-dependency) and `readSettingValue` in `src/settings.ts`; runtime config
+  reads go through `unwrapVolatile` (after exporting a volatile schema, config
+  fields on both versions validate to `{ get() }` reference objects).
+- New `tests/settings.test.mjs`: `Config` validation behavior (unknown keys kept /
+  defaults / `role('secret')` / volatile vs plain) and an **export-contract test**
+  (`lib/index.js`'s `Config` has `toJSON`; replicating 0.2.0's `volatileForm`
+  collection logic collects all 9 fields).
+- Browser-half settings card migrated to 0.2.0: new pure `pickClientMount` in
+  `src/client/mount-strategy.ts` (0.1.5 wins, capability detection, mutually
+  exclusive mounting) and a unified form backend `A2AFormSource` in
+  `card-controller.ts` (0.1.5 `SettingsScope` adapted via `legacyScopeSource`,
+  0.2.0 goes straight to `ConfigForm`). On 0.2.0 the card mounts into the
+  `plugins.item` slot through `configForms` + `whileServed(['a2a-server'])`
+  (copies the official subagent/agent-loop registration shape, `order:50`); 0.1.5
+  still uses `settings.plugin.item` + `settingsScope` (unchanged).
+  `dsh.client.inject` now also includes `@deepseek-ai/dsh-client-ui-settings`.
+  New `tests/mount-strategy.test.mjs`.
+
+### Changed
+
+- The 0.2.0 no-`installSection`/`register` branch: the loud `console.warn`
+  ("panel unavailable") is now an info log explaining that the settings area is
+  derived from the exported `Config` schema.
+- Docs: CONFIGURATION / README (both languages) add a "0.2.0 settings area"
+  section, stating the two behavior differences from 0.1.5 — 0.2.0 form edits land
+  in the profile's `cordis.patch.yml` (not `settings.yaml`, applied via reload);
+  the derived area always reports `applies: 'live'` even though
+  `port`/`host`/`contextMapPath` actually require a restart.
+
 ## [0.3.1] - 2026-10-05
 
 ### Fixed

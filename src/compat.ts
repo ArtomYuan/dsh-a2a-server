@@ -18,6 +18,61 @@ import { createRequire } from 'node:module'
 /** 插件名（也是 0.2.0 命名空间 source 的 kind 后缀） */
 const PLUGIN_NAME = '@artomyuan/dsh-a2a-server'
 
+/**
+ * 结构判定一个值是否为 volatile 引用对象（schemastery `.volatile()` 的校验输出，
+ * 由 cosmokit `createVolatile` 生成：`{ get(): T, [write]: … }`）。
+ *
+ * 用结构判定 `typeof v?.get === 'function'` 而非 cosmokit 的 `isVolatile`
+ * （后者要求 `write` Symbol 在场），避免引入对 cosmokit 的运行时依赖；
+ * 任意兼容的 `{ get() }` 引用对象都能被解包。
+ */
+export function isVolatile(value: unknown): value is { get(): unknown } {
+  return typeof value === 'object' && value !== null && typeof (value as { get?: unknown }).get === 'function'
+}
+
+/**
+ * 深度解包 volatile 引用对象为普通标量/对象（纯函数、零依赖，可独立单测）。
+ *
+ * 导出运行时 `Config`（volatile schema）后，cordis 会用 `Config['~standard']`
+ * 校验 entry config，每个带 `.volatile()` 的字段都会变成 `{ get() }` 引用对象
+ * （即使该字段带 default，校验输出也是引用对象），因此 0.1.5 / 0.2.0 双版本
+ * 的运行时读配置都**必须**先解包。对普通值幂等（标量直接返回，对象/数组逐层
+ * 深拷贝并递归解包）。
+ *
+ * @param value - 任意待解包值（volatile 引用、普通标量、嵌套对象/数组、undefined）
+ * @returns 解包后的普通值
+ */
+export function unwrapVolatile(value: unknown): unknown {
+  if (isVolatile(value)) return unwrapVolatile(value.get())
+  if (Array.isArray(value)) return value.map(unwrapVolatile)
+  if (typeof value === 'object' && value !== null) {
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, unwrapVolatile(child)]))
+  }
+  return value
+}
+
+/**
+ * 尽力把一个 schemastery 字段标记为 volatile（`.volatile()`），宿主不支持时
+ * **原样返回该字段**。
+ *
+ * 为什么必须特性探测而不是直接调用：0.2.0 的宿主 schemastery 有 `.volatile()`
+ * （3.18.4 起），而 0.1.5 的源码版宿主会把裸标识符 `@deepseek-ai/schemastery`
+ * 解析到它自带的 `vendor/schemastery`（3.18.2，**无此方法**），并**盖过**插件
+ * 自带的依赖副本 —— 于是「package.json 声明的版本」并不等于「运行时实得的
+ * 版本」。直接调用会让插件在 0.1.5 上加载即崩
+ * （`A2A_FIELD_SHAPES.port.volatile is not a function`，实测于 0.1.5 沙盒实例）。
+ *
+ * 探测失败的后果是良性的：0.1.5 上 schema 退回 plain 形状，`installSection`
+ * 路径与未导出 `Config` 时完全一致；0.2.0 上必然存在 `.volatile()`，设置区照常派生。
+ *
+ * @param shape - 待标记的 schemastery 字段
+ * @returns 标记后的字段；宿主不支持时返回入参本身
+ */
+export function volatileIfSupported<S>(shape: S): S {
+  const candidate = shape as { volatile?: () => S }
+  return typeof candidate?.volatile === 'function' ? candidate.volatile() : shape
+}
+
 /** 版本探测缓存哨兵：null = 尚未探测 */
 let probed: string | undefined | null = null
 
