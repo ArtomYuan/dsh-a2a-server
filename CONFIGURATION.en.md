@@ -386,6 +386,32 @@ semantics); 0.2.0's `mutate` returns whether the Host accepted (`false` after a
 recovery read), 0.1.5 re-reads `userLayer` after saving, and on conflict the
 snapshot is re-read per contract.
 
+#### Host primitive symbols: runtime resolution plus a local fallback
+
+The card never imports a host primitive through a static named import. The browser
+half and the host packages are related through bundle externals: the build
+references the host module as a namespace property access (shaped like
+`_primitives.Tag`), so statically importing a name the host does not export fails
+neither the build nor the module link — it only yields `undefined` at runtime, and
+rendering it as a component is React #130 (element type is invalid).
+
+The measured differences between the two versions of
+`@deepseek-ai/dsh-client-ui-primitives` (export surfaces counted from the packages):
+
+| Symbol | 0.1.5-rc.2 | 0.2.0-rc.2 | Handling |
+| --- | --- | --- | --- |
+| `IconChevronDownOutline14` | yes | no (renamed) | first candidate |
+| `IconChevronDownOutlineRegular` / `…Medium` | no | yes | second and third candidates |
+| `Tag` | yes | yes (identical `TagTone` union) | resolved the same way, guarding against a like rename |
+
+The card resolves candidates through the pure `resolveComponent` in
+`src/client/primitive-symbols.ts` (no React or JSX, unit-testable under node) and
+falls back to local implementations in `src/client/primitives.tsx` (a hand-drawn
+14px SVG chevron and a local pill) when every candidate is missing, so **no version
+ever renders `undefined`**. Host-provided symbols always win, keeping the look
+consistent with the host. Regression coverage lives in
+`tests/primitive-symbols.test.mjs`.
+
 ### 0.2.0's version gate and exemption (A4)
 
 0.2.0 added a runtime compatibility gate: a plugin whose peer range does not

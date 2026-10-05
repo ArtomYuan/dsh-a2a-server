@@ -35,6 +35,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `dsh.client.inject` now also includes `@deepseek-ai/dsh-client-ui-settings`.
   New `tests/mount-strategy.test.mjs`.
 
+### Fixed
+
+- **Card render crash caught in a real browser (React #130)**: the settings card
+  imported the host primitive `IconChevronDownOutline14` by a static named import,
+  but that symbol was renamed in `dsh-client-ui-primitives` 0.2.0-rc.2 (size suffix
+  → `…Regular`/`…Medium` variants). Under bundle externals the name resolves to
+  `undefined`, so the details view crashed on render (the summary view renders no
+  such symbol and stayed fine). The card now resolves candidate names at runtime
+  through the pure `resolveComponent` in `src/client/primitive-symbols.ts` and
+  closes the gap with local fallbacks in `src/client/primitives.tsx` (a hand-drawn
+  14px SVG chevron and a local pill); host symbols still win, so both versions keep
+  the host look. `Tag` is resolved the same way even though both versions ship it,
+  guarding against a like rename. New `tests/primitive-symbols.test.mjs`
+  (10 cases: candidate order, degradation when an export is missing, non-component
+  values rejected, both versions' names required in the list).
+
 ### Changed
 
 - The 0.2.0 no-`installSection`/`register` branch: the loud `console.warn`

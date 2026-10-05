@@ -30,6 +30,18 @@
   0.1.5 仍走 `settings.plugin.item` + `settingsScope`（行为不变）；`dsh.client.inject`
   增补 `@deepseek-ai/dsh-client-ui-settings`。新增 `tests/mount-strategy.test.mjs`。
 
+### Fixed
+
+- **浏览器实测的卡片渲染崩溃（React #130）**：设置卡片静态按名导入宿主原语
+  `IconChevronDownOutline14`，而该符号在 `dsh-client-ui-primitives` 0.2.0-rc.2
+  已改名（尺寸后缀 → `…Regular`/`…Medium` 变体），bundle external 形态下取到
+  `undefined`，details 视图渲染即崩（summary 不渲染该符号故正常）。改为经
+  `src/client/primitive-symbols.ts` 的纯函数 `resolveComponent` **运行时解析候选名**，
+  并以 `src/client/primitives.tsx` 的**本地兜底**（自绘 14px SVG 箭头、本地胶囊）
+  收口；宿主符号仍优先使用，两版观感保持。`Tag` 虽两版同名同契约，也一并走同一
+  机制以防同类改名。新增 `tests/primitive-symbols.test.mjs`（10 例：候选顺序、
+  缺导出降级、非组件值不误判、两版命名必须同时在列表）。
+
 ### Changed
 
 - 0.2.0 无 `installSection`/`register` 分支：从响亮 `console.warn`（「面板不可用」）

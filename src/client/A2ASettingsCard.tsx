@@ -15,8 +15,8 @@
 
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { IconChevronDownOutline14, Tag } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SnapshotSelectorHook, TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
+import { ChevronDown, SettingsTag } from './primitives.tsx'
 import type { A2ACardKey } from './locales.ts'
 import type {
   A2AEditableField,
@@ -360,11 +360,11 @@ export function A2ASettingsCard(props: A2ASettingsCardProps): ReactNode {
             </span>
             {state.dirty ? (
               <span style={pendingStyle} data-testid="a2a-server-card-unsaved">
-                <Tag tone="neutral">{t('unsaved')}</Tag>
+                <SettingsTag>{t('unsaved')}</SettingsTag>
               </span>
             ) : null}
             <span style={open ? { ...chevronStyle, ...chevronOpenStyle } : chevronStyle}>
-              <IconChevronDownOutline14 />
+              <ChevronDown />
             </span>
           </button>
 

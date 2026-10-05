@@ -335,6 +335,28 @@ locale:NS, inject:()=>controller.inject() }`；卡片组件在 `view:'summary'`�
 都带 `revision`（OCC/冲突语义），0.2.0 的 `mutate` 返回 Host 是否接受（`false` 时已
 recover 重读），0.1.5 靠保存后回读 `userLayer` 判定，冲突时按契约重读快照。
 
+#### 宿主原语符号：运行时解析 + 本地兜底
+
+卡片**不静态按名导入宿主原语**。浏览器半边与宿主包是 bundle external 关系，编译
+产物以「命名空间属性访问」形态引用宿主模块（形如 `_primitives.Tag`），因此静态按名
+导入一个宿主没有的导出**不会构建失败、也不会链接失败**，只会在运行时得到
+`undefined`；把它当组件渲染即 React #130（element type is invalid）。
+
+`@deepseek-ai/dsh-client-ui-primitives` 的两版差异实测（导出面按包实测统计）：
+
+| 符号 | 0.1.5-rc.2 | 0.2.0-rc.2 | 处置 |
+| --- | --- | --- | --- |
+| `IconChevronDownOutline14` | ✓ | ✗（改名） | 进候选列表第 1 位 |
+| `IconChevronDownOutlineRegular` / `…Medium` | ✗ | ✓ | 进候选列表第 2/3 位 |
+| `Tag` | ✓ | ✓（`TagTone` 取值集合逐字相同） | 仍走同一套解析，防同类改名 |
+
+卡片经 `src/client/primitive-symbols.ts` 的纯函数 `resolveComponent`（无 React/JSX，
+可在 node 单测）按候选名解析，全缺失时用 `src/client/primitives.tsx` 的本地兜底
+（自绘 14px SVG 箭头、本地胶囊样式），**任一版本上都不会渲染 `undefined`**。
+宿主提供的符号始终优先，观感与宿主保持一致。回归测试见
+`tests/primitive-symbols.test.mjs`（候选顺序、缺导出降级、非组件值不误判、两版命名
+必须同时在列表）。
+
 ### 0.2.0 的版本门与豁免（A4）
 
 0.2.0 新增了运行时兼容门：peer 范围不含已装 dsh 版本的插件会被拒绝加载，报
