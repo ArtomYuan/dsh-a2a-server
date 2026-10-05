@@ -91,10 +91,11 @@ Hermes 用户如需完整体验（过程直播 / 会话连续性 / 单执行）�
 
 | 插件版本 | 支持的 dsh |
 | --- | --- |
-| **0.3.x**（当前） | **0.1.5-rc.2 ∥ 0.2.0-rc.2** —— 双版本并行，同一插件无需切换 |
+| **0.4.x**（当前） | **0.1.5-rc.2 ∥ 0.2.0-rc.2** —— 双版本并行；0.2.0 上设置区（Settings）可用 |
+| 0.3.x | 0.1.5-rc.2 ∥ 0.2.0-rc.2 —— 双版本并行，同一插件无需切换 |
 | 0.2.x | 0.1.x |
 
-0.3.0 起，本插件在 dsh 0.1.5 与 0.2.0 之间升级或回退**无需更换插件**；机制细节见
+0.3.0 起，本插件在 dsh 0.1.5 与 0.2.0 之间升级或回退**无需更换插件**；0.4.0 起 dsh 0.2.0 的设置区（GUI 配置）可用。机制细节见
 [CONFIGURATION.md](CONFIGURATION.md)。
 
 ## 安装说明
@@ -109,7 +110,7 @@ Hermes 用户如需完整体验（过程直播 / 会话连续性 / 单执行）�
      dsh plugin --profile <name> add @artomyuan/dsh-a2a-server
      ```
 
-     需要锁定版本时带上版本号：`dsh plugin --profile <name> add @artomyuan/dsh-a2a-server@0.3.0`。
+     需要锁定版本时带上版本号：`dsh plugin --profile <name> add @artomyuan/dsh-a2a-server@0.4.0`。
 
    - **从 GitHub 源码安装**（用于尝鲜尚未发布的改动；**必须固定 commit**）：
 
