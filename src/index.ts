@@ -15,9 +15,11 @@
  *     映射持久化到 `$DSH_HOME/storages/a2a-context-map.json`，跨重启续接。
  *
  * P2a 流式中间事件 + 映射清理：
- *   - `SendStreamingMessage` 流式模式下，订阅 dsh agent 的 `session/event`，
- *     把思考/工具/状态/文本等中间事件作为 A2A `artifactUpdate`（文本用 text
- *     Part、非文本用 data Part 私有扩展）实时推给客户端。
+ *   - `SendStreamingMessage` 流式模式下，订阅 dsh agent 的事件面，把思考/工具/
+ *     状态/文本等中间事件作为 A2A `artifactUpdate`（文本用 text Part、非文本用
+ *     data Part 私有扩展）实时推给客户端。助手增量有双事件面（A6，见
+ *     `src/compat.ts`）：0.1.5 走 `session/event` 的 `assistant/chunk`，0.2.0 走
+ *     进程内事件 `agent/assistant-stream`，两面共用同一缓冲状态机并单向去重。
  *   - contextMap 每条目记 lastUsedAt，TTL（默认 7 天）清理过期孤儿条目。
  *
  * P3 工作区自动归组：
@@ -63,10 +65,17 @@ import type { AgentExecutor, ExecutionEventBus, RequestContext } from '@a2a-js/s
 import { installA2ASettings, A2AConfigSchema, A2ASettingsSchema } from './settings.ts'
 import type { A2ASettings } from './settings.ts'
 import {
+  applyAssistantStreamFrame,
+  applySessionAssistantChunk,
+  assistantStreamTurnStep,
+  createAssistantIngestState,
+  dshRuntimeVersion,
   pluginMessageSourceFor,
   readToolResult,
   sourceModeForSessionVersion,
+  supportsAssistantStreamEvents,
   unwrapVolatile,
+  type AssistantStreamFrameView,
   type PluginMessageSourceMode,
 } from './compat.ts'
 
@@ -554,13 +563,52 @@ class DshAgentExecutor implements AgentExecutor {
     try {
       const baseline = ((handle.agent.session as unknown as { log?: unknown[] }).log ?? []).length
 
-      // 流式订阅：过滤本会话的 session/event，映射高信号中间事件实时回调。
-      // assistant/chunk 按 block index 缓冲 text/reasoning delta，block-end 才 emit（整块）。
-      const textBuf: Record<number, string> = {}
-      const thoughtBuf: Record<number, string> = {}
+      // 流式订阅（任务级，任务毕在 finally 释放）：
+      //  - 0.1.5：`session/event`，按会话 id 过滤；`assistant/chunk` 与其他高信号
+      //    事件都从这里取。
+      //  - 0.2.0：实时助手增量改由进程内 cordis 事件 `agent/assistant-stream`
+      //    发布（payload { agent, frame }），`session/event` 不再有
+      //    `assistant/chunk`（这正是 0.4.0 直播流没有 thinking/text 帧的根因）。
+      // 两面共用同一个缓冲状态机（chunk 是同一 StreamChunk 联合类型），并按
+      // agent 对象身份过滤——插件 ctx 非 agent-scoped，会收到同一宿主内所有
+      // agent 的帧。
+      const ingest = createAssistantIngestState()
       const callNames = new Map<string, string>()
       // A1 兜底探测：投递后是否真的驱动出了 turn（见下方 deliver 的重试逻辑）
       let turnStarted = false
+      // 活会话格式版本（v3=0.1.x / v4=0.2.0 起）既是 A1 选 source 形状的依据，
+      // 也是「要不要订阅进程内增量面」的第二路运行时信号。
+      const sessionVersion = (handle.agent.session as unknown as { header?: { version?: unknown } })
+        .header?.version
+      const sessionFormatVersion = typeof sessionVersion === 'number' ? sessionVersion : undefined
+      // 0.2.0 起才有 agent/assistant-stream：版本谓词（探测失败按真，见 compat）
+      // 或活会话 v4 任一命中即订阅，避免插件自身 node_modules 里的滞后版本误判。
+      const useRuntimeStream =
+        supportsAssistantStreamEvents(dshRuntimeVersion()) || (sessionFormatVersion ?? 0) >= 4
+      // 进程内帧的 turn/step 只在 start 帧出现，chunk 帧沿用最近一次 start 的值。
+      let streamTurn: number | undefined
+      let streamStep: number | undefined
+      // 0.1.x 的编译期类型里没有该事件（本包 devDep 按 0.1.x 做类型检查），
+      // 局部收窄 ctx.on 的签名；该事件名在旧宿主上是否发布由宿主决定。
+      const onRuntimeEvent = this.ctx.on as unknown as (
+        event: string,
+        listener: (payload: unknown) => void,
+      ) => () => void
+      const disposeStream = useRuntimeStream
+        ? onRuntimeEvent('agent/assistant-stream', (payload) => {
+            const { agent, frame } = (payload ?? {}) as {
+              agent?: unknown
+              frame?: AssistantStreamFrameView
+            }
+            if (agent !== handle.agent) return
+            const turnStep = assistantStreamTurnStep(frame)
+            if (turnStep.turn !== undefined) streamTurn = turnStep.turn
+            if (turnStep.step !== undefined) streamStep = turnStep.step
+            for (const delta of applyAssistantStreamFrame(ingest, frame)) {
+              onEvent({ kind: delta.kind, turn: streamTurn, step: streamStep, text: delta.text })
+            }
+          })
+        : () => {}
       const dispose = this.ctx.on('session/event', (session, event) => {
         const sid = (session as { header?: { id?: unknown }; id?: unknown }).header?.id
           ?? (session as { id?: unknown }).id
@@ -580,27 +628,10 @@ class DshAgentExecutor implements AgentExecutor {
         const data = ev.data ?? {}
         switch (ev.type) {
           case 'assistant/chunk': {
-            const chunk = data.chunk
-            if (chunk === undefined || chunk.index === undefined) return
-            if (chunk.type === 'block-start') {
-              if (chunk.blockType === 'text') textBuf[chunk.index] = ''
-              else if (chunk.blockType === 'reasoning') thoughtBuf[chunk.index] = ''
-            } else if (chunk.type === 'text-delta') {
-              if (textBuf[chunk.index] !== undefined) textBuf[chunk.index] += chunk.text ?? ''
-              else if (thoughtBuf[chunk.index] !== undefined) thoughtBuf[chunk.index] += chunk.text ?? ''
-            } else if (chunk.type === 'reasoning-delta') {
-              if (thoughtBuf[chunk.index] !== undefined) thoughtBuf[chunk.index] += chunk.text ?? ''
-            } else if (chunk.type === 'block-end') {
-              const t = textBuf[chunk.index]
-              delete textBuf[chunk.index]
-              if (chunk.block?.type === 'text' && t !== undefined && t.length > 0) {
-                onEvent({ kind: 'text', turn: data.turn, step: data.step, text: t })
-              }
-              const th = thoughtBuf[chunk.index]
-              delete thoughtBuf[chunk.index]
-              if (chunk.block?.type === 'reasoning' && th !== undefined && th.length > 0) {
-                onEvent({ kind: 'thinking', turn: data.turn, step: data.step, text: th })
-              }
+            // 0.1.5 路径；若本任务已收到 0.2.0 的进程内帧，状态机内部静默丢弃
+            //（去重门，见 compat.applySessionAssistantChunk）。
+            for (const delta of applySessionAssistantChunk(ingest, data.chunk)) {
+              onEvent({ kind: delta.kind, turn: data.turn, step: data.step, text: delta.text })
             }
             return
           }
@@ -640,11 +671,7 @@ class DshAgentExecutor implements AgentExecutor {
         // `{ kind: 'plugin:dsh-a2a-server' }`，v3（0.1.x）用 `{ kind: 'plugin', plugin: … }`。
         // 旧形状在 0.2.0 上会让消息进不了 loop（任务静默不执行），故再加一层兜底：
         // 首选形状未驱动出 turn/start 时换另一种形状重试一次，仍无则响亮告警。
-        const sessionVersion = (handle.agent.session as unknown as { header?: { version?: unknown } })
-          .header?.version
-        const preferred = sourceModeForSessionVersion(
-          typeof sessionVersion === 'number' ? sessionVersion : undefined,
-        )
+        const preferred = sourceModeForSessionVersion(sessionFormatVersion)
 
         const deliver = async (mode: PluginMessageSourceMode): Promise<boolean> => {
           turnStarted = false
@@ -678,6 +705,8 @@ class DshAgentExecutor implements AgentExecutor {
         }
         await handle.agent.whenIdle()
       } finally {
+        // 两条订阅同一生命周期：任务毕一并释放（进程内帧订阅可能为 no-op）
+        disposeStream()
         dispose()
       }
 
@@ -728,7 +757,7 @@ function buildAgentCard(host: string, port: number): AgentCard {
       organization: 'deepseek',
       url: 'https://github.com/deepseek-ai',
     },
-    version: '0.4.0',
+    version: '0.5.0',
     capabilities: {
       streaming: true,
       pushNotifications: false,

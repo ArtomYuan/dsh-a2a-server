@@ -6,14 +6,21 @@
  *  - supportsNamespacedMessageSource 的版本判定（0.1.5-rc.2 / 0.2.0-rc.2 /
  *    0.2.0 / 未知）；
  *  - readToolResult 对 v3 夹具与 v4 夹具（同一语义、两种形状）的双形状读取；
- *  - pluginMessageSource 在两种判定下的 source 形状与探测一致性。
+ *  - pluginMessageSource 在两种判定下的 source 形状与探测一致性；
+ *  - A6 助手实时增量双事件面：版本谓词、start/chunk/end 三态、text 与
+ *    reasoning 各自 block-end 落地、空块不落地、双路径去重不重复落地。
  */
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  applyAssistantStreamFrame,
+  applySessionAssistantChunk,
+  assistantStreamTurnStep,
+  createAssistantIngestState,
   dshRuntimeVersion,
   isVolatile,
+  supportsAssistantStreamEvents,
   supportsNamespacedMessageSource,
   pluginMessageSource,
   pluginMessageSourceFor,
@@ -211,4 +218,112 @@ test('isVolatile: 结构判定（typeof v?.get === "function"）', () => {
   assert.equal(isVolatile('x'), false)
   assert.equal(isVolatile([1, 2]), false)
   assert.equal(isVolatile(42), false)
+})
+
+// ── A6：助手实时增量双事件面（版本谓词 + 帧/chunk 缓冲状态机） ──────────
+
+test('supportsAssistantStreamEvents: 明确读到 0.1.x 才为假', () => {
+  assert.equal(supportsAssistantStreamEvents('0.1.5-rc.2'), false)
+  assert.equal(supportsAssistantStreamEvents('0.1.2-rc.1'), false)
+  assert.equal(supportsAssistantStreamEvents('0.1.99'), false)
+})
+
+test('supportsAssistantStreamEvents: 0.2.0 起为真', () => {
+  assert.equal(supportsAssistantStreamEvents('0.2.0-rc.2'), true)
+  assert.equal(supportsAssistantStreamEvents('0.2.0'), true)
+  assert.equal(supportsAssistantStreamEvents('0.3.0'), true)
+  assert.equal(supportsAssistantStreamEvents('1.0.0'), true)
+})
+
+test('supportsAssistantStreamEvents: 探测失败按真（方向与 A1 相反：漏订代价远大于多订）', () => {
+  assert.equal(supportsAssistantStreamEvents(undefined), true)
+  assert.equal(supportsAssistantStreamEvents(''), true)
+  assert.equal(supportsAssistantStreamEvents('garbage'), true)
+})
+
+/** 0.2.0 帧构造器：start（带 turn/step）/ chunk（带 StreamChunk）/ end */
+const frameStart = (turn = 1, step = 2) => ({ type: 'start', turn, step, attemptId: 'a', revision: 1 })
+const frameChunk = (chunk) => ({ type: 'chunk', index: 0, chunk })
+const frameEnd = () => ({ type: 'end', index: 3, outcome: { kind: 'committed' } })
+
+test('applyAssistantStreamFrame: start/chunk/end 三态——仅 chunk 帧走缓冲，任意帧置去重门', () => {
+  const state = createAssistantIngestState()
+  assert.equal(state.runtimeStreamSeen, false)
+  assert.deepEqual(applyAssistantStreamFrame(state, frameStart()), [])
+  assert.equal(state.runtimeStreamSeen, true)
+  assert.deepEqual(applyAssistantStreamFrame(state, frameChunk({ type: 'block-start', index: 0, blockType: 'text' })), [])
+  assert.deepEqual(applyAssistantStreamFrame(state, frameChunk({ type: 'text-delta', index: 0, text: '你' })), [])
+  assert.deepEqual(
+    applyAssistantStreamFrame(state, frameChunk({ type: 'block-end', index: 0, block: { type: 'text' } })),
+    [{ kind: 'text', text: '你' }],
+  )
+  assert.deepEqual(applyAssistantStreamFrame(state, frameEnd()), [])
+})
+
+test('applyAssistantStreamFrame: text 与 reasoning 各自在 block-end 落地', () => {
+  const state = createAssistantIngestState()
+  applyAssistantStreamFrame(state, frameChunk({ type: 'block-start', index: 0, blockType: 'text' }))
+  applyAssistantStreamFrame(state, frameChunk({ type: 'text-delta', index: 0, text: 'hello' }))
+  assert.deepEqual(
+    applyAssistantStreamFrame(state, frameChunk({ type: 'block-end', index: 0, block: { type: 'text' } })),
+    [{ kind: 'text', text: 'hello' }],
+  )
+  applyAssistantStreamFrame(state, frameChunk({ type: 'block-start', index: 1, blockType: 'reasoning' }))
+  applyAssistantStreamFrame(state, frameChunk({ type: 'reasoning-delta', index: 1, text: '想一下' }))
+  assert.deepEqual(
+    applyAssistantStreamFrame(state, frameChunk({ type: 'block-end', index: 1, block: { type: 'reasoning' } })),
+    [{ kind: 'thinking', text: '想一下' }],
+  )
+})
+
+test('applyAssistantStreamFrame: 空块（无 delta）不落地', () => {
+  const state = createAssistantIngestState()
+  applyAssistantStreamFrame(state, frameChunk({ type: 'block-start', index: 0, blockType: 'text' }))
+  assert.deepEqual(
+    applyAssistantStreamFrame(state, frameChunk({ type: 'block-end', index: 0, block: { type: 'text' } })),
+    [],
+  )
+  // 连 block-start 都没有的裸 block-end 同样不落地
+  assert.deepEqual(
+    applyAssistantStreamFrame(state, frameChunk({ type: 'block-end', index: 7, block: { type: 'text' } })),
+    [],
+  )
+})
+
+test('0.1.5 路径：未见过进程内帧时 session/event 的 assistant/chunk 正常落地', () => {
+  const state = createAssistantIngestState()
+  assert.deepEqual(applySessionAssistantChunk(state, { type: 'block-start', index: 0, blockType: 'text' }), [])
+  assert.deepEqual(applySessionAssistantChunk(state, { type: 'text-delta', index: 0, text: 'legacy' }), [])
+  assert.deepEqual(
+    applySessionAssistantChunk(state, { type: 'block-end', index: 0, block: { type: 'text' } }),
+    [{ kind: 'text', text: 'legacy' }],
+  )
+  assert.equal(state.runtimeStreamSeen, false)
+})
+
+test('去重：见过进程内帧后，同一任务的 session assistant/chunk 全部静默', () => {
+  const state = createAssistantIngestState()
+  applyAssistantStreamFrame(state, frameStart())
+  assert.deepEqual(applySessionAssistantChunk(state, { type: 'block-start', index: 0, blockType: 'text' }), [])
+  assert.deepEqual(applySessionAssistantChunk(state, { type: 'text-delta', index: 0, text: 'dup' }), [])
+  assert.deepEqual(
+    applySessionAssistantChunk(state, { type: 'block-end', index: 0, block: { type: 'text' } }),
+    [],
+  )
+})
+
+test('去重：同一 block-end 重复投喂只落地一次（缓冲随块清空）', () => {
+  const state = createAssistantIngestState()
+  applySessionAssistantChunk(state, { type: 'block-start', index: 0, blockType: 'text' })
+  applySessionAssistantChunk(state, { type: 'text-delta', index: 0, text: 'once' })
+  const blockEnd = { type: 'block-end', index: 0, block: { type: 'text' } }
+  assert.deepEqual(applySessionAssistantChunk(state, blockEnd), [{ kind: 'text', text: 'once' }])
+  assert.deepEqual(applySessionAssistantChunk(state, blockEnd), [])
+})
+
+test('assistantStreamTurnStep: 仅 start 帧携带 turn/step，chunk/end/未知帧返回空对象', () => {
+  assert.deepEqual(assistantStreamTurnStep(frameStart(3, 4)), { turn: 3, step: 4 })
+  assert.deepEqual(assistantStreamTurnStep(frameChunk({ type: 'finish' })), {})
+  assert.deepEqual(assistantStreamTurnStep(frameEnd()), {})
+  assert.deepEqual(assistantStreamTurnStep(undefined), {})
 })

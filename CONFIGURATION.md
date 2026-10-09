@@ -91,7 +91,8 @@ lastUsedAt}`），server 重启后同 contextId 经 `ctx.agents.resume` 续接�
 
 ### 流式中间事件
 
-`SendStreamingMessage` 下，DshAgentExecutor 订阅 dsh agent 的 `session/event`，把
+`SendStreamingMessage` 下，DshAgentExecutor 订阅 dsh agent 的流式事件面（0.1.5 的
+`session/event`；0.2.0 的助手增量另走进程内 `agent/assistant-stream`，见 A6），把
 高信号中间事件实时推为 A2A 流式事件——
 
 - 文本块 → `artifactUpdate`（text Part，`artifactId: "stream-text"`、`append: true`）；
@@ -275,6 +276,38 @@ COMPLETED 但 `(no text output)`），因此这是双版本适配的硬门禁项
 对外 wire 事件字段名不变（仍是 `kind/turn/step/name/text`），工具名沿用
 `tool/call` 记下的 `callId→name` 反查。取不到任何形状时返回双 `undefined`，
 不抛、不改变事件流。
+
+### 助手实时增量的双事件面（A6）
+
+助手增量（text / reasoning）在两个运行时里走**两套互斥的事件面**：
+
+| 运行时 | 事件面 | 载体 |
+| --- | --- | --- |
+| 0.1.5 | `session/event` 的 `assistant/chunk` | 会话事件，`data.chunk` 是 `StreamChunk` |
+| 0.2.0 | 进程内 cordis 事件 `agent/assistant-stream` | payload `{ agent, frame }`；frame 为 `start`/`chunk`/`end` 三态，`frame.chunk` 是同一 `StreamChunk` 联合类型 |
+
+0.2.0-rc.2 删除了 `assistant/chunk`，因此 0.4.0 只认旧事件面的实现在 0.2.0 上
+直播流只剩 turn/tool/status 帧，**既没有 text 帧也没有 thinking 帧**（真机 A2A
+SSE 抓包实证）。0.5.0 起两条路径并存：
+
+- 0.1.5：`session/event` → `applySessionAssistantChunk`；
+- 0.2.0：`agent/assistant-stream` → `applyAssistantStreamFrame`，先按
+  `payload.agent === handle.agent` 过滤（插件 ctx 非 agent-scoped，会收到同一
+  宿主内所有 agent 的帧）；
+- 两面共用同一 block index 缓冲 + `block-end` 整块落地状态机（text 块 → `text`
+  帧、reasoning 块 → `thinking` 帧；空块不落地）；turn/step 在 0.2.0 取最近一次
+  `start` 帧，0.1.5 沿用 `data.turn/step`。
+
+**去重门（单向）**：某个任务内一旦收到过 `agent/assistant-stream` 帧，就忽略该
+任务后续的 `session/event` `assistant/chunk`，保证同一 block 不会被两条路径各落地
+一次。反向不设门：0.1.5 根本不发布进程内帧，反向门只在两面同时对发时有意义，而
+进程内帧是更早、更全的那一面，始终让它生效可避免丢低延迟帧。订阅与
+`session/event` 同生命周期，任务毕在同一个 `finally` 里一并释放。
+
+是否订阅进程内事件面用两路信号取或：`supportsAssistantStreamEvents(dshRuntimeVersion())`
+（探测失败按**真**——漏订会让 0.2.0 静默丢帧，多订一个惰性监听器零代价；方向与
+A1 的消息 source 谓词刻意相反）或活会话格式为 v4。版本谓词与缓冲状态机都是
+`src/compat.ts` 里的纯函数，单测见 `tests/compat.test.mjs`。
 
 ### 设置面板在 0.2.0：由导出的 Config schema 派生（A3）
 

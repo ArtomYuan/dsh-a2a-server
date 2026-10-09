@@ -7,6 +7,47 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-10-10
+
+### Fixed
+
+- **Live stream had no text/thinking frames on dsh 0.2.0**: 0.2.0-rc.2 removed the
+  `assistant/chunk` session event; live assistant deltas are now published as the
+  process-local cordis event `agent/assistant-stream` (payload `{ agent, frame }`,
+  where frame is `start`/`chunk`/`end`). 0.4.0 only knew the old event surface, so
+  on 0.2.0 the live stream carried only turn_start / tool_call / tool_result /
+  turn_end (confirmed by a real-machine A2A SSE capture). Since 0.5.0 both paths
+  coexist: 0.1.5 keeps using `session/event`, while 0.2.0 subscribes to
+  `agent/assistant-stream` (filtered by `payload.agent === handle.agent`, released
+  on task completion alongside the existing `dispose()`), reusing the same
+  block-index buffering and `block-end` whole-block landing semantics (text →
+  `text` frame, reasoning → `thinking` frame, empty blocks never land). On 0.2.0,
+  turn/step come from the most recent `start` frame; on 0.1.5 they still come from
+  `data.turn/step`.
+
+### Added
+
+- A one-way dedup gate across the two event surfaces: once a task has seen any
+  `agent/assistant-stream` frame, later `session/event` `assistant/chunk` chunks
+  for that task are ignored, so one block can never land twice. The reverse gate
+  is deliberately absent — 0.1.5 never publishes the process-local frames, so a
+  reverse gate would only matter if both surfaces fired; the process-local one is
+  the earlier and more complete surface, so letting it always win avoids losing
+  low-latency frames.
+- New pure helpers in `src/compat.ts` (node builtins only):
+  `supportsAssistantStreamEvents` (version predicate; unknown versions count as
+  true — missing the subscription would silently drop every 0.2.0 frame while an
+  extra inert listener costs nothing, the opposite fallback direction from A1's
+  message-source predicate), plus `createAssistantIngestState` /
+  `applySessionAssistantChunk` / `applyAssistantStreamFrame` /
+  `assistantStreamTurnStep` (frame/chunk buffering decisions).
+- 10 new cases in `tests/compat.test.mjs`: 0.1.5/0.2.0 version decisions, the
+  start/chunk/end tri-state, text and reasoning each landing at their own
+  `block-end`, empty blocks not landing, duplicate-path and duplicate-`block-end`
+  not landing twice, and turn/step carried only by `start` frames.
+- `CONFIGURATION.md` / `CONFIGURATION.en.md`: new compatibility item A6 (the dual
+  event surface for live assistant deltas).
+
 ## [0.4.0] - 2026-10-05
 
 ### Added

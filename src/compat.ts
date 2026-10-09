@@ -8,6 +8,10 @@
  *  - A2：0.2.0（v4 会话格式）的 `tool/result` 事件把 `toolCallId` 上移到 message
  *    层并把 `content` 展平为文本块数组；0.1.5（v3）是
  *    `message.content[0].toolCallId` + `message.content[0].content[0].text`。
+ *  - A6：助手实时增量的双事件面。0.1.5 在 `session/event` 上发布
+ *    `assistant/chunk`（按 block index 缓冲的会话事件）；0.2.0 删除该事件，改由
+ *    进程内 cordis 事件 `agent/assistant-stream`（payload `{ agent, frame }`）
+ *    发布。两者消费同一 `StreamChunk` 联合类型，故缓冲/落地状态机共用。
  *
  * 本模块只依赖 node 内置模块，不耦合 dsh 类型，可在任意 node 环境独立单测。
  */
@@ -116,6 +120,30 @@ export function supportsNamespacedMessageSource(version: string | undefined): bo
   if (t[0] !== 0) return t[0] > 0
   if (t[1] !== 2) return t[1] > 2
   return t[2] >= 0
+}
+
+/**
+ * 判定宿主是否可能发布 0.2.0 的「进程内助手实时增量」事件
+ * `agent/assistant-stream`。
+ *
+ * 0.1.5 把 text/reasoning 增量作为 `session/event` 的 `assistant/chunk` 发布；
+ * 0.2.0-rc.2 删除了该会话事件，实时增量只走进程内 cordis 事件
+ * `agent/assistant-stream`（payload `{ agent, frame }`）。本谓词用于决定是否
+ * 订阅后者：订阅一个宿主从不发布的事件在 cordis 上是无害的（实测 0.1.2 注册
+ * 未知事件名正常返回 disposer，但 0.1.x 版本上直接不订更干净）。
+ *
+ * **兜底方向与 {@link supportsNamespacedMessageSource} 刻意相反：无法解析
+ * （含 `undefined`）时按真处理。** 理由是失败代价不对称——漏订会让 0.2.0 静默
+ * 丢掉全部 text/thinking 帧（本包 0.4.0 的真实缺陷），而多订一个惰性监听器零
+ * 代价；只有「明确读到 0.1.x 版本号」才判假。
+ *
+ * @param version - `@deepseek-ai/dsh-agent` 版本（一般来自 {@link dshRuntimeVersion}）
+ */
+export function supportsAssistantStreamEvents(version: string | undefined): boolean {
+  const t = version === undefined ? undefined : versionTriple(version)
+  if (t === undefined) return true
+  if (t[0] !== 0) return t[0] > 0
+  return t[1] >= 2
 }
 
 /** 0.1.5 形状：独立 `plugin` 种类 + 插件名字段 */
@@ -258,5 +286,151 @@ export function readToolResult(data: ToolResultData | undefined | null): ToolRes
   return {
     callId: typeof data?.callId === 'string' ? data.callId : undefined,
     text: undefined,
+  }
+}
+
+// ── A6：助手实时增量的双事件面（0.1.5 `assistant/chunk` / 0.2.0 帧） ─────
+
+/**
+ * `StreamChunk` 中本状态机关心字段的宽容视图（不 import dsh 类型，字段全可选，
+ * 运行时形状由宿主保证）。
+ */
+export interface AssistantChunkView {
+  type?: string
+  blockType?: string
+  index?: number
+  text?: string
+  block?: { type?: string }
+}
+
+/** `agent/assistant-stream` 帧的宽容视图：start / chunk / end 三态 */
+export interface AssistantStreamFrameView {
+  type?: string
+  turn?: number
+  step?: number
+  chunk?: AssistantChunkView
+}
+
+/** 在 `block-end` 落地的一条高信号增量（与对外 descriptor 的 kind 同名） */
+export interface AssistantDelta {
+  kind: 'text' | 'thinking'
+  text: string
+}
+
+/**
+ * 每个 dsh 任务一份的助手增量缓冲状态。
+ *
+ * 两条事件面都投喂同一个状态机：0.1.5 的 `session/event`→`assistant/chunk`
+ * 与 0.2.0 的 `agent/assistant-stream`→`frame.chunk`，其 chunk 是同一
+ * `StreamChunk` 联合类型，故按 block index 缓冲、`block-end` 整块落地的逻辑
+ * 完全复用（整块语义：文本/思考只在块结束时且非空才 emit）。
+ */
+export interface AssistantIngestState {
+  /** index → 累积文本（text 块） */
+  text: Record<number, string>
+  /** index → 累积思考（reasoning 块） */
+  reasoning: Record<number, string>
+  /** 本任务是否已见过 0.2.0 的进程内增量帧（去重门，见 {@link applySessionAssistantChunk}） */
+  runtimeStreamSeen: boolean
+}
+
+/** 新建一份空的助手增量缓冲状态（任务级生命周期） */
+export function createAssistantIngestState(): AssistantIngestState {
+  return { text: {}, reasoning: {}, runtimeStreamSeen: false }
+}
+
+/**
+ * 缓冲一个 `StreamChunk`，返回本次调用需要落地的高信号增量（通常为空；仅
+ * 非空块的 `block-end` 产出一条）。
+ *
+ * 语义与 0.4.0 内联在 index.ts 的缓冲逻辑逐条等价：`text-delta` 挂到已开启的
+ * text 块，旧形状偶发把它挂到 reasoning 块 index 上时沿用既有兜底；
+ * `block-end` 无论 block 类型都清掉该 index 的两个缓冲（避免残留串块），只有
+ * block 类型匹配且累积非空才 emit。
+ */
+function bufferAssistantChunk(
+  state: AssistantIngestState,
+  chunk: AssistantChunkView | undefined,
+): AssistantDelta[] {
+  if (chunk === undefined || chunk.index === undefined) return []
+  const index = chunk.index
+  const deltas: AssistantDelta[] = []
+  switch (chunk.type) {
+    case 'block-start':
+      if (chunk.blockType === 'text') state.text[index] = ''
+      else if (chunk.blockType === 'reasoning') state.reasoning[index] = ''
+      return deltas
+    case 'text-delta':
+      if (state.text[index] !== undefined) state.text[index] += chunk.text ?? ''
+      else if (state.reasoning[index] !== undefined) state.reasoning[index] += chunk.text ?? ''
+      return deltas
+    case 'reasoning-delta':
+      if (state.reasoning[index] !== undefined) state.reasoning[index] += chunk.text ?? ''
+      return deltas
+    case 'block-end': {
+      const text = state.text[index]
+      delete state.text[index]
+      if (chunk.block?.type === 'text' && text !== undefined && text.length > 0) {
+        deltas.push({ kind: 'text', text })
+      }
+      const reasoning = state.reasoning[index]
+      delete state.reasoning[index]
+      if (chunk.block?.type === 'reasoning' && reasoning !== undefined && reasoning.length > 0) {
+        deltas.push({ kind: 'thinking', text: reasoning })
+      }
+      return deltas
+    }
+    default:
+      return deltas
+  }
+}
+
+/**
+ * 0.1.5 路径：消费 `session/event` 的 `assistant/chunk`。
+ *
+ * 去重门：本任务一旦收到过 0.2.0 的进程内帧，就静默忽略后续会话事件增量。
+ * 0.2.0-rc.2 已不再发布 `assistant/chunk`，该门是为「同一宿主同时/先后发布两
+ * 面」的过渡或未来情形兜底，保证同一 block 不会因两条路径各落地一次。
+ * 反向不设门（先来会话增量不屏蔽进程内帧）：0.1.5 根本不发布进程内帧，反向门
+ * 只在两面对发时有意义，而进程内帧是更早、更全的那一面，让后者始终生效可避免
+ * 丢失低延迟帧。
+ */
+export function applySessionAssistantChunk(
+  state: AssistantIngestState,
+  chunk: AssistantChunkView | undefined,
+): AssistantDelta[] {
+  if (state.runtimeStreamSeen) return []
+  return bufferAssistantChunk(state, chunk)
+}
+
+/**
+ * 0.2.0 路径：消费一帧 `agent/assistant-stream`。
+ *
+ * 任意帧（start/chunk/end）都置 {@link AssistantIngestState.runtimeStreamSeen}，
+ * 即「见过进程内面」以启用去重门；只有 `chunk` 帧携带 `StreamChunk`，交给同一
+ * 状态机缓冲。调用方须先按 `payload.agent === handle.agent` 过滤（插件 ctx 非
+ * agent-scoped，会收到同一宿主内所有 agent 的帧）。
+ */
+export function applyAssistantStreamFrame(
+  state: AssistantIngestState,
+  frame: AssistantStreamFrameView | undefined,
+): AssistantDelta[] {
+  state.runtimeStreamSeen = true
+  if (frame?.type !== 'chunk') return []
+  return bufferAssistantChunk(state, frame.chunk)
+}
+
+/**
+ * 取帧自带的 turn/step。只有 `start` 帧携带这两个字段；`chunk`/`end` 帧返回空
+ * 对象，调用方沿用最近一次 `start` 帧的值（与旧路径按 `data.turn/step` 取值
+ * 语义一致）。
+ */
+export function assistantStreamTurnStep(
+  frame: AssistantStreamFrameView | undefined,
+): { turn?: number; step?: number } {
+  if (frame?.type !== 'start') return {}
+  return {
+    ...(typeof frame.turn === 'number' ? { turn: frame.turn } : {}),
+    ...(typeof frame.step === 'number' ? { step: frame.step } : {}),
   }
 }

@@ -107,8 +107,9 @@ random contextId (equivalent to creating a new session each time, no reuse).
 ### Streaming intermediate events
 
 Under `SendStreamingMessage`, DshAgentExecutor subscribes to the dsh agent's
-`session/event` and pushes high-signal intermediate events as A2A streaming events
-in real time —
+streaming event surfaces (0.1.5's `session/event`; on 0.2.0 assistant deltas
+additionally arrive over the process-local `agent/assistant-stream`, see A6) and
+pushes high-signal intermediate events as A2A streaming events in real time —
 
 - text chunks → `artifactUpdate` (text Part, `artifactId: "stream-text"`,
   `append: true`);
@@ -315,6 +316,47 @@ The `tool/result` session event differs between the v3 and v4 session formats;
 Wire event field names are unchanged (`kind/turn/step/name/text`); the tool name
 keeps the existing `callId→name` lookup recorded at `tool/call`. When no shape
 matches it returns both fields as `undefined` — no throw, no event-stream change.
+
+### Dual event surface for live assistant deltas (A6)
+
+Assistant deltas (text / reasoning) travel over **two mutually exclusive event
+surfaces** across the runtimes:
+
+| Runtime | Event surface | Carrier |
+| --- | --- | --- |
+| 0.1.5 | `session/event`'s `assistant/chunk` | session event; `data.chunk` is a `StreamChunk` |
+| 0.2.0 | process-local cordis event `agent/assistant-stream` | payload `{ agent, frame }`; frame is a `start`/`chunk`/`end` tri-state and `frame.chunk` is the same `StreamChunk` union |
+
+0.2.0-rc.2 removed `assistant/chunk`, so an implementation that only knew the old
+surface (0.4.0) delivered nothing but turn/tool/status frames on 0.2.0 — **neither
+text frames nor thinking frames** (confirmed by a real-machine A2A SSE capture).
+Since 0.5.0 both paths coexist:
+
+- 0.1.5: `session/event` → `applySessionAssistantChunk`;
+- 0.2.0: `agent/assistant-stream` → `applyAssistantStreamFrame`, filtered first by
+  `payload.agent === handle.agent` (the plugin ctx is not agent-scoped and would
+  otherwise receive frames from every agent in the same host);
+- both surfaces share one block-index buffering plus `block-end` whole-block landing
+  state machine (text block → `text` frame, reasoning block → `thinking` frame;
+  empty blocks never land); on 0.2.0 turn/step come from the most recent `start`
+  frame, on 0.1.5 from `data.turn/step` as before.
+
+**One-way dedup gate**: once a task has seen any `agent/assistant-stream` frame,
+later `session/event` `assistant/chunk` chunks for that task are ignored, so one
+block can never land twice. The reverse gate is deliberately absent — 0.1.5 never
+publishes the process-local frames, so a reverse gate would only matter if both
+surfaces fired at once, and the process-local surface is the earlier and more
+complete one; letting it always win avoids losing low-latency frames. The
+subscription shares one lifecycle with `session/event` and is released in the same
+`finally`.
+
+Whether to subscribe to the process-local surface is the OR of two signals:
+`supportsAssistantStreamEvents(dshRuntimeVersion())` (unknown versions count as
+**true** — missing the subscription would silently drop every 0.2.0 frame while an
+extra inert listener costs nothing; deliberately the opposite fallback direction
+from A1's message-source predicate) or a live session in v4 format. Both the
+version predicate and the buffering state machine are pure functions in
+`src/compat.ts`; unit tests live in `tests/compat.test.mjs`.
 
 ### Settings panel on 0.2.0 — derived from the exported Config schema (A3)
 

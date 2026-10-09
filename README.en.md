@@ -101,12 +101,14 @@ are not hard-bound; combine them as needed:
 
 | Plugin version | Supported dsh |
 | --- | --- |
-| **0.4.x** (current) | **0.1.5-rc.2 ∥ 0.2.0-rc.2** — both runtimes in parallel; settings area (Settings) available on 0.2.0 |
+| **0.5.x** (current) | **0.1.5-rc.2 ∥ 0.2.0-rc.2** — both runtimes in parallel; settings area (Settings) and live stream (text/thinking frames) both available on 0.2.0 |
+| 0.4.x | 0.1.5-rc.2 ∥ 0.2.0-rc.2 — both runtimes in parallel; settings area available on 0.2.0, but the live stream lacks text/thinking frames |
 | 0.3.x | 0.1.5-rc.2 ∥ 0.2.0-rc.2 — both runtimes in parallel; no plugin change needed |
 | 0.2.x | 0.1.x |
 
 Since 0.3.0, moving between dsh 0.1.5 and 0.2.0 (in either direction) requires no
-plugin change; since 0.4.0 the settings area (GUI) is available on dsh 0.2.0. See
+plugin change; since 0.4.0 the settings area (GUI) is available on dsh 0.2.0; since
+0.5.0 the live stream (text/thinking frames) is restored on dsh 0.2.0. See
 [CONFIGURATION.en.md](CONFIGURATION.en.md) for mechanics.
 
 ## Installation
@@ -122,7 +124,7 @@ workspace), distributed as a standalone bundle.
      dsh plugin --profile <name> add @artomyuan/dsh-a2a-server
      ```
 
-     Pin a version when needed: `dsh plugin --profile <name> add @artomyuan/dsh-a2a-server@0.4.0`.
+     Pin a version when needed: `dsh plugin --profile <name> add @artomyuan/dsh-a2a-server@0.5.0`.
 
    - **From the GitHub source** (to try unreleased changes; **the commit must be pinned**):
 

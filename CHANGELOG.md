@@ -7,6 +7,37 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.5.0] - 2026-10-10
+
+### Fixed
+
+- **dsh 0.2.0 直播流没有 text/thinking 帧**：0.2.0-rc.2 删除了 `session/event`
+  的 `assistant/chunk`，助手实时增量改由进程内 cordis 事件
+  `agent/assistant-stream`（payload `{ agent, frame }`，frame 为
+  `start`/`chunk`/`end`）发布。0.4.0 只认旧事件面，故 0.2.0 上直播流只剩
+  turn_start / tool_call / tool_result / turn_end（真机 A2A SSE 抓包实证）。
+  0.5.0 起两条路径并存：0.1.5 继续走 `session/event`，0.2.0 订阅
+  `agent/assistant-stream`（按 `payload.agent === handle.agent` 过滤，任务毕随
+  既有 `dispose()` 一并释放），复用同一 block index 缓冲 + `block-end` 整块落地
+  语义（text → `text` 帧、reasoning → `thinking` 帧，空块不落地）。turn/step 在
+  0.2.0 取最近一次 `start` 帧，0.1.5 沿用 `data.turn/step`。
+
+### Added
+
+- 双事件面去重门（单向）：某个任务内一旦收到过 `agent/assistant-stream` 帧，
+  就忽略该任务后续的 `session/event` `assistant/chunk`，保证同一 block 不会被两
+  条路径各落地一次。反向不设门——0.1.5 根本不发布进程内帧，反向门仅在两面对发
+  时有意义，而进程内帧是更早、更全的那一面，始终让它生效可避免丢低延迟帧。
+- `src/compat.ts` 新增纯函数（仅 node 内置依赖）：
+  `supportsAssistantStreamEvents`（版本谓词，探测失败按真——漏订会让 0.2.0 静默
+  丢帧，多订惰性监听器零代价，兜底方向与 A1 的消息 source 谓词刻意相反）、
+  `createAssistantIngestState` / `applySessionAssistantChunk` /
+  `applyAssistantStreamFrame` / `assistantStreamTurnStep`（frame/chunk 缓冲决策）。
+- `tests/compat.test.mjs` 增补 10 条单测：0.1.5/0.2.0 版本判定、start/chunk/end
+  三态、text 与 reasoning 各自 `block-end` 落地、空块不落地、重复路径与重复
+  `block-end` 不重复落地、start 帧携带 turn/step。
+- `CONFIGURATION.md` / `CONFIGURATION.en.md` 增补兼容项 A6（助手实时增量的双事件面）。
+
 ## [0.4.0] - 2026-10-05
 
 ### Added
