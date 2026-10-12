@@ -123,8 +123,12 @@ data Part 描述符 `kind` 取值：`thinking`（`{text}`）、`tool_call`
 - `contextMapPath`：contextId→session 映射持久文件路径（默认
   `$DSH_HOME/storages/a2a-context-map.json`）。
 - `contextMapTtlDays`：映射条目 TTL 天数（默认 7；超期条目在加载/写入时清理）。
+- `settleCapMs`：**释放 Lead 之前等待其活跃 continuable 子代理结算的上限**（毫秒，
+  默认 `1800000` = 30 分钟；`0` = 关闭该等待、回落旧语义）。超限回落「释放 + 队列兜底」
+  并打印 warning，详见下节「释放前等待子代理结算」。
 
-注入依赖：`agents`、`agentPresets`、`sessions`。
+注入依赖：`agents`、`agentPresets`、`sessions`（`settleCapMs` 生效还需要宿主提供
+`subagents` 服务，见下节「降级」）。
 
 ## 设置面板
 
@@ -158,9 +162,42 @@ settings 能力：host 侧注册 settings 命名空间 `a2a-server`（schema 由
 | `cwd` | 空串 = `process.cwd()` | 下一次 A2A 请求（无需重启） |
 | `contextMapPath` | 留空 = `$DSH_HOME/storages/a2a-context-map.json` | 需重启 dsh（或重新加载 profile） |
 | `contextMapTtlDays` | 默认 7 | 下一次落盘清理（无需重启） |
+| `settleCapMs` | 默认 `1800000`（30 分钟）；`0` = 关闭等待 | 下一次 A2A 请求（无需重启） |
 
 `port` / `host` / `contextMapPath` 保存后，当前运行实例仍监听启动时的地址，直到重启
 dsh（或重新加载 profile）才生效。
+
+### 释放前等待子代理结算（settleCapMs，v0.5.1 起）
+
+**动机**：A2A 请求原先在 `whenIdle()` 后立即 `handle.dispose()` 释放 Lead。若 Lead 在
+派发（`spawn_teammate` / `subagent`）子代理后收口，子代理完成回传时父已不在
+`ctx.agents`，dsh-subagent 会报 `PARENT_UNAVAILABLE`（0.2.0-rc.2 起已有队列补丁兜底，
+但主路仍要等下一次会话激活才续跑）。
+
+**新行为**：释放前必须满足「**Lead 已 idle 且无活跃 continuable 子代理**」。等待是
+**事件驱动**（`subagent/start|end` + 本 agent 的 `agent/status`；不做忙轮询），期间
+子代理回传引发的新回合会逐段跑完再复查，该回合新派生的子代理也会被目录刷新捕获。
+回传到场时父仍在注册表 ⇒ **当场投递、当场续跑**。
+
+**判定口径**：`ctx.subagents.listChildren(leadId)`（durable 子代理目录）中
+`mode === 'continuable'` 的行 = 会回传的子代理（one-shot 不等）；目录是全量的，故用
+「进入等待时仍在本进程注册表内的子代理」作基线，再按 `subagent/start|end` 事件增量
+维护活跃集合（`end` 移出、`start` 复位——冷恢复是新 epoch）。
+
+**上限兜底**：`settleCapMs` 到点即**释放**（不无限等待），打印 warning 含仍活跃数量，
+并明确「晚到回传由 dsh-subagent 队列补丁入队、下次激活补投」。
+
+**请求生命周期（明示的语义变化）**：请求收口时机由「Lead 一次 idle」后移到「子代理
+结算之后」，因此桥侧流会跨阶段保持更久。受理语义不变：SUBMITTED / WORKING 与桥侧
+「⏳ 已受理」仍然即时返回，只是最终结果更晚。
+
+**阈值建议**：`settleCapMs` ≤ 桥侧 `a2a_agents.dsh.timeout`（本机 3600s）**减去任务自身
+承诺时长**的余量；超长流水线请同步上调桥侧 timeout，或把 `settleCapMs` 调到与之一致
+（本机建议保持 1800000 = 30 分钟，留出任务本身的时间）。
+
+**降级**：宿主没有 `subagents` 服务（如 dsh 0.1.5）或目录查询失败 → **不等待**（回落
+0.5.0 行为）并打印 warning；`settleCapMs=0` 同样关闭等待。三种情形下回传兜底仍由
+dsh-subagent 队列补丁承担。
 
 ### 凭据（authToken）
 

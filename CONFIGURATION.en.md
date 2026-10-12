@@ -146,8 +146,14 @@ environment variable `A2A_SERVER_TOKEN`):
   (default `$DSH_HOME/storages/a2a-context-map.json`).
 - `contextMapTtlDays`: mapping entry TTL in days (default 7; expired entries are
   cleaned on load/write).
+- `settleCapMs`: **upper bound, in milliseconds, on waiting for this Lead's live
+  continuable subagents to settle before the handle is released** (default
+  `1800000` = 30 min; `0` disables the wait and restores the old semantics). On
+  timeout the handle is released anyway (queue fallback) with a warning — see
+  "Waiting for subagents before release" below.
 
-Injected dependencies: `agents`, `agentPresets`, `sessions`.
+Injected dependencies: `agents`, `agentPresets`, `sessions` (the `settleCapMs`
+wait additionally needs the host's `subagents` service — see "Degradation" below).
 
 ## Settings panel
 
@@ -187,9 +193,52 @@ override" to fall back to the value in `cordis.patch.yml`.
 | `cwd` | Empty string = `process.cwd()` | Next A2A request (no restart) |
 | `contextMapPath` | Empty = `$DSH_HOME/storages/a2a-context-map.json` | Requires a dsh restart (or profile reload) |
 | `contextMapTtlDays` | Default 7 | Next flush cleanup (no restart) |
+| `settleCapMs` | Default `1800000` (30 min); `0` disables the wait | Next A2A request (no restart) |
 
 After saving `port` / `host` / `contextMapPath`, the running instance keeps listening
 on the startup address until dsh is restarted (or the profile reloaded).
+
+### Waiting for subagents before release (settleCapMs, since v0.5.1)
+
+**Why**: an A2A request used to call `handle.dispose()` immediately after
+`whenIdle()`. If the Lead settled right after delegating (`spawn_teammate` /
+`subagent`), a late child return found the parent absent from `ctx.agents`, and
+dsh-subagent reported `PARENT_UNAVAILABLE` (rc.2+ has a queue patch as a fallback,
+but the main path still waited for the next session activation).
+
+**New behaviour**: the handle is released only once the Lead is **idle _and_ has no
+live continuable subagent**. The wait is **event-driven** (`subagent/start|end`
+plus this agent's `agent/status`; no busy polling): turns started by a child return
+run to completion before the next check, and children spawned by those turns are
+picked up from a refreshed catalog. A return that arrives while the parent is still
+registered is therefore delivered and continues the chain immediately.
+
+**Liveness rule**: rows with `mode === 'continuable'` in
+`ctx.subagents.listChildren(leadId)` (the durable subagent catalog) are the
+children that return (one-shot children are not awaited). The catalog is durable
+and full, so the baseline is "children still present in this process's agent
+registry when the wait starts", and liveness is then maintained incrementally from
+`subagent/start|end` events (`end` removes, `start` re-adds — a cold resume is a new
+epoch).
+
+**Cap**: when `settleCapMs` expires the handle **is released** (never waits
+forever), with a warning naming the live count and stating that late returns fall
+back to the dsh-subagent queue patch.
+
+**Request lifecycle (explicit semantic change)**: finalization moves from "the Lead
+went idle once" to "after the subagents settled", so the bridge stream stays open
+across stages. Acceptance is unchanged: SUBMITTED / WORKING and the bridge's
+"⏳ accepted" receipt still return immediately; only the final result is later.
+
+**Threshold advice**: keep `settleCapMs` ≤ the bridge's `a2a_agents.dsh.timeout`
+(3600 s on this host) **minus** the task's own expected duration; raise the bridge
+timeout for very long pipelines, or align both (1800000 = 30 min is the recommended
+default here).
+
+**Degradation**: if the host has no `subagents` service (e.g. dsh 0.1.5) or the
+catalog query fails, the plugin **does not wait** (0.5.0 behaviour) and warns;
+`settleCapMs=0` disables the wait as well. In all three cases the dsh-subagent queue
+patch remains the fallback for late returns.
 
 ### Credentials (authToken)
 

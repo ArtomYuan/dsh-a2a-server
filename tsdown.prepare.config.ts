@@ -13,8 +13,10 @@ import { defineConfig } from 'tsdown'
 // lib/client/mount-strategy.js 供 tests/mount-strategy.test.mjs 在无 DOM 的 node 里单测。
 // `src/client/primitive-symbols.ts` 同理：跨版本宿主符号解析的纯函数（无 React/JSX），
 // 单独成 lib/client/primitive-symbols.js 供 tests/primitive-symbols.test.mjs 单测。
+// `src/settle.ts` 同理：「释放前等活跃子代理结算」的等待原语（纯逻辑、零 dsh 依赖），
+// 单独成 lib/settle.js 供 tests/settle-window.test.mjs 单测。
 export default defineConfig({
-  entry: ['src/index.ts', 'src/compat.ts', 'src/client/mount-strategy.ts', 'src/client/primitive-symbols.ts'],
+  entry: ['src/index.ts', 'src/compat.ts', 'src/settle.ts', 'src/client/mount-strategy.ts', 'src/client/primitive-symbols.ts'],
   outDir: 'lib',
   format: ['esm'],
   platform: 'node',

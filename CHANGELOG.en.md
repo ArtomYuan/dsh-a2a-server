@@ -7,6 +7,61 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.1] - 2026-10-12
+
+### Changed
+
+- **Wait for live continuable subagents before releasing the Lead (A2A "close the
+  window at the source")**: previously the request called `handle.dispose()`
+  immediately after `whenIdle()`, so a Lead that settled right after delegating was
+  gone by the time a late child return arrived — dsh-subagent reported
+  `PARENT_UNAVAILABLE` (rc.2+ has a queue patch as a fallback, but the main path
+  still waited for the next session activation). Since 0.5.1 the handle is released
+  only once the Lead is **idle _and_ has no live continuable subagent**: a return
+  that arrives while the parent is still registered is delivered and continues the
+  chain immediately, so the "parent absent" window no longer exists in the main
+  path. The wait is **event-driven** (`subagent/start|end` plus this agent's
+  `agent/status`; no busy polling): turns started by a child return run to
+  completion before the next check, and children spawned by those turns are picked
+  up from a refreshed catalog.
+- **Request lifecycle (explicit semantic change)**: finalization moves from "the
+  Lead went idle once" to "after the subagents settled", so the bridge stream stays
+  open across stages. Acceptance is unchanged: SUBMITTED / WORKING and the bridge's
+  "⏳ accepted" receipt still return immediately; only the final result is later.
+- **New setting `settleCapMs`** (default `1800000` = 30 min; `0` disables the wait
+  and restores the old semantics): a stuck or endlessly forking child must not block
+  forever — on timeout the handle **is released** with a warning naming the live
+  count and stating that late returns fall back to the dsh-subagent queue patch.
+  Keep the cap ≤ the bridge's `a2a_agents.dsh.timeout` minus the task's own duration
+  (3600 s on this host; the default leaves half of it).
+- **Degradation**: if the host has no `subagents` service (e.g. dsh 0.1.5) or the
+  catalog query fails, the plugin does not wait (0.5.0 behaviour) and warns; in all
+  three degraded paths the dsh-subagent queue patch remains the fallback.
+
+### Added
+
+- `src/settle.ts` (new; pure logic, zero dsh dependencies, emitted as its own
+  `lib/settle.js` entry so it can be unit tested): `waitForSubagentQuiescence` plus
+  the pure helpers `continuableChildIds` / `liveChildIds` / `applySignal`. Liveness
+  = the durable subagent catalog (`mode === 'continuable'` only) minus ended events
+  (`end` removes, `start` re-adds — a cold resume is a new epoch), baselined on the
+  children still present in this process's agent registry when the wait starts.
+- `tests/settle-window.test.mjs` (15 cases): catalog parsing (filter/dedupe/bad
+  rows), baseline + event folding, all four outcomes (`quiesced` / `cap` /
+  `disabled` / `unavailable`), event-driven waiting (`waitForSignal` calls ==
+  rounds), no lost wakeup (a child that settles and is then cold-resumed must not be
+  released early even though its `start` arrives during `whenIdle()`), guaranteed
+  unsubscribe, and a bounded cap.
+- `CONFIGURATION.md` / `CONFIGURATION.en.md`: the `settleCapMs` field and a
+  "Waiting for subagents before release" section (motivation, liveness rule, cap,
+  request lifecycle, threshold advice, degradation).
+
+### Notes
+
+- Field count goes from 9 to 10 (`settleCapMs`); existing fields and defaults are
+  unchanged and the 0.1.5 / 0.2.0 dual-version compatibility surface is unaffected
+  (the new behaviour is capability-probed).
+
 ## [0.5.0] - 2026-10-10
 
 ### Fixed

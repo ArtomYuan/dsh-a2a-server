@@ -62,8 +62,10 @@ import {
   ServerCallContext,
 } from '@a2a-js/sdk/server'
 import type { AgentExecutor, ExecutionEventBus, RequestContext } from '@a2a-js/sdk/server'
-import { installA2ASettings, A2AConfigSchema, A2ASettingsSchema } from './settings.ts'
+import { installA2ASettings, A2AConfigSchema, A2ASettingsSchema, DEFAULT_SETTLE_CAP_MS } from './settings.ts'
 import type { A2ASettings } from './settings.ts'
+import { waitForSubagentQuiescence } from './settle.ts'
+import type { SettleHost, SettleOutcome, SubagentChildrenSource, SubagentSignal } from './settle.ts'
 import {
   applyAssistantStreamFrame,
   applySessionAssistantChunk,
@@ -119,6 +121,8 @@ const runtimeConfig = {
   host: undefined as string | undefined,
   contextMapPath: undefined as string | undefined,
   contextMapTtlDays: 7,
+  // 释放 Lead 前等待活跃 continuable 子代理结算的上限（毫秒）；0 = 关闭等待
+  settleCapMs: DEFAULT_SETTLE_CAP_MS,
 }
 
 /** 构造一个纯文本 Part */
@@ -333,6 +337,130 @@ function agentComposition(ctx: Context) {
       }
       await ctx.agentPresets.mount(agentCtx, runtimeConfig.preset)
     },
+  }
+}
+
+/**
+ * 组装「释放 Lead 前等子代理结算」所需的宿主能力。
+ *
+ * 数据面 = `ctx.subagents.listChildren`（0.2.0 的 durable 子代理目录；0.1.5 无此面 →
+ * 不等待、降级到旧语义，由 dsh-subagent 队列补丁兜底）；
+ * 事件面 = cordis 事件 `subagent/start` / `subagent/end`（子代理生命周期）与本 Lead 的
+ * `agent/status`（本 agent 被回传唤醒 / 再次 idle）。两面都由结构判定取用，不做版本硬编码。
+ *
+ * 监听**只在等待期间**存在（`subscribe` 注册、退订函数注销）；`waitForSignal` 用单次
+ * 定时器（`unref()`）而非轮询。
+ *
+ * @param ctx - 插件 context
+ * @param parentSessionId - 本次请求的 Lead 会话 id（目录的键；事件按它过滤）
+ * @returns 供 {@link waitForSubagentQuiescence} 使用的宿主能力
+ */
+function settleHostOf(ctx: Context, parentSessionId: string): SettleHost {
+  const subagents = ctx.get('subagents') as { listChildren?: unknown } | undefined
+  const listChildren = subagents?.listChildren
+  const subagentChildren: SubagentChildrenSource | undefined =
+    typeof listChildren === 'function'
+      ? {
+          listChildren: (parentId: string) =>
+            (listChildren as (this: unknown, id: string) => Promise<readonly unknown[]>).call(
+              subagents,
+              parentId,
+            ),
+        }
+      : undefined
+  const agents = ctx.agents as unknown as { get(id: string): unknown }
+  const onEvent = ctx.on as unknown as (
+    event: string,
+    listener: (payload: unknown) => void,
+  ) => () => void
+  // 订阅回调与 waitForSignal 之间的唤醒桥：信号到达即唤醒当前等待者（无等待者时无需动作）
+  let wake: (() => void) | undefined
+  return {
+    ...(subagentChildren === undefined ? {} : { subagentChildren }),
+    isChildResident: (childId) => agents.get(childId) !== undefined,
+    subscribe: (onSignal) => {
+      const dispatch = (signal: SubagentSignal): void => {
+        onSignal(signal)
+        const woken = wake
+        wake = undefined
+        woken?.()
+      }
+      const listeners = [
+        onEvent('subagent/end', (info) => {
+          const payload = info as { local?: unknown; id?: unknown } | undefined
+          if (payload?.local === false) return
+          dispatch({ kind: 'end', ...(payload?.id === undefined ? {} : { childId: String(payload.id) }) })
+        }),
+        onEvent('subagent/start', (info) => {
+          const payload = info as { local?: unknown; id?: unknown } | undefined
+          if (payload?.local === false) return
+          dispatch({ kind: 'start', ...(payload?.id === undefined ? {} : { childId: String(payload.id) }) })
+        }),
+        onEvent('agent/status', (payload) => {
+          const view = payload as { agent?: { id?: unknown } } | undefined
+          if (view?.agent === undefined || String(view.agent.id) !== parentSessionId) return
+          dispatch({ kind: 'parent' })
+        }),
+      ]
+      return () => {
+        for (const off of listeners) {
+          try {
+            off()
+          } catch {
+            /* 退订失败不影响等待结果 */
+          }
+        }
+      }
+    },
+    waitForSignal: (timeoutMs) =>
+      new Promise<void>((resolve) => {
+        let timer: ReturnType<typeof setTimeout> | undefined
+        let done = false
+        const finish = (): void => {
+          if (done) return
+          done = true
+          if (timer !== undefined) clearTimeout(timer)
+          if (wake === finish) wake = undefined
+          resolve()
+        }
+        wake = finish
+        timer = setTimeout(finish, Math.max(1, timeoutMs))
+        ;(timer as unknown as { unref?: () => void }).unref?.()
+      }),
+    now: () => Date.now(),
+    warn: (message) => {
+      console.warn(message)
+    },
+  }
+}
+
+/** 按等待结果输出明确日志（超限回落 / 能力缺失都不静默） */
+function logSettleOutcome(sessionId: string, outcome: SettleOutcome): void {
+  switch (outcome.outcome) {
+    case 'quiesced':
+      if (outcome.rounds > 0) {
+        console.log(
+          `[dsh-a2a-server] lead ${sessionId} 静默：子代理已全部结算（等待 ${outcome.waitedMs}ms，`
+            + `${outcome.rounds} 轮），现在释放句柄`,
+        )
+      }
+      return
+    case 'cap':
+      console.warn(
+        `[dsh-a2a-server] lead ${sessionId} 等待子代理结算超上限（${outcome.waitedMs}ms，仍有 `
+          + `${outcome.liveChildren} 个活跃 continuable 子代理）：按兜底释放句柄；`
+          + '晚到回传将由 dsh-subagent 队列补丁入队并在下次激活补投',
+      )
+      return
+    case 'unavailable':
+      console.warn(
+        `[dsh-a2a-server] lead ${sessionId} 无法判定子代理活口（listChildren 缺失或查询失败）：`
+          + '不等待，直接释放；回传兜底由 dsh-subagent 队列补丁承担',
+      )
+      return
+    case 'disabled':
+      console.log(`[dsh-a2a-server] lead ${sessionId} 未启用结算等待（settleCapMs=0）：直接释放`)
+      return
   }
 }
 
@@ -703,7 +831,18 @@ class DshAgentExecutor implements AgentExecutor {
             )
           }
         }
-        await handle.agent.whenIdle()
+        // 释放前「彻底消窗」：等 Lead 自身 idle **且** 无活跃 continuable 子代理。
+        // 旧行为（0.5.0 及以前）是 whenIdle() 后立即释放，于是 Lead 派发子代理后收口、
+        // 子代理晚回传时父已不在注册表（dsh-subagent 会报 PARENT_UNAVAILABLE；虽已有
+        // 队列补丁兜底，但主路要等下一次会话激活）。现在等到子代理结算才释放：回传到场
+        // 时父仍在注册表 → 当场投递、当场续跑，窗口从源头不存在。上限见 settleCapMs。
+        const settle = await waitForSubagentQuiescence(
+          settleHostOf(this.ctx, String(sessionId)),
+          handle.agent as unknown as { whenIdle(): Promise<unknown> },
+          String(sessionId),
+          runtimeConfig.settleCapMs,
+        )
+        logSettleOutcome(String(sessionId), settle)
       } finally {
         // 两条订阅同一生命周期：任务毕一并释放（进程内帧订阅可能为 no-op）
         disposeStream()
@@ -805,6 +944,7 @@ function applyResolvedConfig(resolved: A2ASettings): void {
   runtimeConfig.host = r.host
   runtimeConfig.contextMapPath = r.contextMapPath
   runtimeConfig.contextMapTtlDays = r.contextMapTtlDays ?? 7
+  runtimeConfig.settleCapMs = r.settleCapMs ?? DEFAULT_SETTLE_CAP_MS
   // 环境变量是最简外部通道，优先级最高（settings 写入也压不过它）
   if (process.env.A2A_SERVER_TOKEN) runtimeConfig.authToken = process.env.A2A_SERVER_TOKEN
   // 每次配置被应用时打一行不含任何密钥的信息日志（authToken 只报有无）
@@ -814,6 +954,7 @@ function applyResolvedConfig(resolved: A2ASettings): void {
     ` port=${runtimeConfig.port ?? '(auto)'} host=${runtimeConfig.host ?? '(default 127.0.0.1)'}` +
     ` contextMapPath=${runtimeConfig.contextMapPath ?? '(default)'}` +
     ` contextMapTtlDays=${runtimeConfig.contextMapTtlDays}` +
+    ` settleCapMs=${runtimeConfig.settleCapMs}` +
     ` authToken=${runtimeConfig.authToken ? '<set>' : '<unset>'}`,
   )
 }

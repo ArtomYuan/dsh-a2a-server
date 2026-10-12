@@ -24,6 +24,7 @@ const ALL_FIELDS = [
   'cwd',
   'contextMapPath',
   'contextMapTtlDays',
+  'settleCapMs',
 ]
 
 // ── A2AConfigSchema（= Config）校验行为 ──────────────────────────────────
@@ -44,6 +45,8 @@ test('Config: 默认值正确（缺失字段回落 schema default）', () => {
   assert.equal(out.model.get(), 'deepseek-v4-flash')
   assert.equal(out.preset.get(), 'standard')
   assert.equal(out.contextMapTtlDays.get(), 7)
+  // v0.5.1：释放前等子代理结算的上限，默认 30 分钟（0 = 关闭等待）
+  assert.equal(out.settleCapMs.get(), 1_800_000)
   // 无 default 的可选字段缺失时为 undefined 引用（volatile 一律变成引用对象）
   assert.equal(out.port.get(), undefined)
   assert.equal(out.host.get(), undefined)
@@ -73,7 +76,7 @@ test('Config: .volatile() 字段产出引用对象，plain SettingsSchema 产出
   assert.equal(plain.provider, 'deepseek-official')
 })
 
-test('单一事实来源不漂移: Config 与 SettingsSchema 同 9 字段', () => {
+test('单一事实来源不漂移: Config 与 SettingsSchema 同 10 字段', () => {
   assert.deepEqual(Object.keys(SettingsSchema.dict).sort(), [...ALL_FIELDS].sort())
   assert.deepEqual(Object.keys(Config.dict).sort(), [...ALL_FIELDS].sort())
 })
@@ -103,7 +106,7 @@ test('导出契约: Config 有 toJSON（0.2.0 schema(entry) 的门槛）', () =>
   assert.equal(typeof Config.toJSON, 'function')
 })
 
-test('导出契约: 复刻 volatileForm 收集逻辑能收集到全部 9 个字段', () => {
+test('导出契约: 复刻 volatileForm 收集逻辑能收集到全部 10 个字段', () => {
   const fields = collectVolatileFields(Config)
   assert.ok(fields !== undefined, 'volatileForm 不应返回 undefined（有 volatile 字段）')
   assert.deepEqual(Object.keys(fields).sort(), [...ALL_FIELDS].sort())

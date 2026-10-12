@@ -7,6 +7,47 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.5.1] - 2026-10-12
+
+### Changed
+
+- **释放 Lead 前先等活跃 continuable 子代理结算（A2A「彻底消窗」）**：旧行为是
+  `whenIdle()` 后立即 `handle.dispose()`，于是 Lead 派发子代理后收口、子代理晚回传时
+  父已不在 `ctx.agents`，回传报 `PARENT_UNAVAILABLE`（0.2.0-rc.2 起虽已有 dsh-subagent
+  队列补丁兜底，但主路仍要等下一次会话激活）。0.5.1 起改为「**已 idle 且无活跃
+  continuable 子代理**」才释放：回传到场时父仍在注册表 ⇒ 当场投递、当场续跑，
+  「父不在」窗口从源头不存在。等待**事件驱动**（`subagent/start|end` + 本 agent
+  `agent/status`，不忙轮询），期间子代理回传引发的新回合逐段跑完再复查，该回合新派生的
+  子代理由目录刷新捕获。
+- **请求生命周期（明示的语义变化）**：请求收口时机由「Lead 一次 idle」后移到「子代理
+  结算之后」，桥侧流跨阶段保持更久；受理语义不变（SUBMITTED/WORKING 与桥侧
+  「⏳ 已受理」仍即时返回，只是最终结果更晚）。
+- **新增配置 `settleCapMs`**（默认 `1800000` = 30 分钟；`0` = 关闭等待、回落旧语义）：
+  子代理卡死/无限派生时不无限等待——超限**照常释放**并打印 warning（含仍活跃数量与
+  「晚到回传由 dsh-subagent 队列补丁补投」）。阈值应 ≤ 桥侧 `a2a_agents.dsh.timeout`
+  减去任务自身时长的余量（本机桥侧 3600s，默认值留一半余量）。
+- **降级**：宿主无 `subagents` 服务（如 dsh 0.1.5）或目录查询失败 → 不等待（回落 0.5.0
+  行为）并打印 warning；三种降级路径下回传兜底仍由 dsh-subagent 队列补丁承担。
+
+### Added
+
+- `src/settle.ts`（新，纯逻辑、零 dsh 依赖，单独成 `lib/settle.js` entry 供单测）：
+  `waitForSubagentQuiescence` + 纯函数 `continuableChildIds` / `liveChildIds` /
+  `applySignal`。活跃判定 = durable 子代理目录（只取 `mode === 'continuable'`）
+  − 结束事件（`end` 移出、`start` 复位，冷恢复是新 epoch），基线取「进入等待时仍在
+  本进程注册表内的子代理」。
+- `tests/settle-window.test.mjs`（15 例）：目录解析（过滤/去重/坏行）、基线 + 事件折返、
+  四种出口（`quiesced` / `cap` / `disabled` / `unavailable`）、**事件驱动**（`waitForSignal`
+  调用数 == 轮数）、**不丢唤醒**（结算后又被冷恢复的子代理，其 `start` 在 `whenIdle()`
+  期间到达也不得提前放行）、退出必退订、上限不无限等。
+- `CONFIGURATION.md` / `CONFIGURATION.en.md` 增补 `settleCapMs` 字段与「释放前等待子代理
+  结算」一节（动机、判定口径、上限兜底、请求生命周期、阈值建议、降级）。
+
+### Notes
+
+- 字段数由 9 → 10（`settleCapMs`）；既有字段与默认值不变，`0.1.5` / `0.2.0` 双版本兼容
+  面不受影响（新行为按能力探测启用）。
+
 ## [0.5.0] - 2026-10-10
 
 ### Fixed

@@ -50,7 +50,15 @@ export interface A2ASettings {
   contextMapPath?: string
   /** 映射条目 TTL 天数（≥1 整数）；下一次落盘清理生效 */
   contextMapTtlDays?: number
+  /**
+   * 释放 Lead 之前，等待其活跃 continuable 子代理结算的上限（毫秒）。
+   * 0 = 关闭该等待（回落旧语义：任务收口即释放）。缺省见 {@link DEFAULT_SETTLE_CAP_MS}。
+   */
+  settleCapMs?: number
 }
+
+/** `settleCapMs` 缺省值：30 分钟（需与桥侧 `a2a_agents.dsh.timeout` 匹配，见 CONFIGURATION） */
+export const DEFAULT_SETTLE_CAP_MS = 1_800_000
 
 /**
  * 字段定义的**单一事实来源**：plain 与 volatile 两个 schema 共用同一份字段形状，
@@ -67,6 +75,7 @@ const A2A_FIELD_SHAPES: Record<keyof A2ASettings, z> = {
   cwd: z.string(),
   contextMapPath: z.string(),
   contextMapTtlDays: z.number().step(1).min(1).default(7),
+  settleCapMs: z.number().step(1).min(0).default(DEFAULT_SETTLE_CAP_MS),
 }
 
 /**
@@ -81,7 +90,7 @@ export const A2ASettingsSchema: z<A2ASettings> = z.object(A2A_FIELD_SHAPES)
  * 插件运行时 `Config`（volatile schema，供 0.2.0 的 settings 服务派生设置区、
  * 也供 cordis 在 0.1.5 / 0.2.0 双版本解析 entry config）。
  *
- * 与 `A2ASettingsSchema` 同 9 字段，但每个字段经
+ * 与 `A2ASettingsSchema` 同 10 字段，但每个字段经
  * {@link volatileIfSupported} 标记 `.volatile()`：0.2.0 的 `volatileForm(schema)`
  * 只收集 `meta.volatile` 的字段进派生表单，这是设置区出现的门槛。`.volatile()`
  * 的校验输出把每个字段变成 `{ get() }` 引用对象（即使带 default），因此运行时
@@ -102,6 +111,7 @@ export const A2AConfigSchema = z.object({
   cwd: volatileIfSupported(A2A_FIELD_SHAPES.cwd),
   contextMapPath: volatileIfSupported(A2A_FIELD_SHAPES.contextMapPath),
   contextMapTtlDays: volatileIfSupported(A2A_FIELD_SHAPES.contextMapTtlDays),
+  settleCapMs: volatileIfSupported(A2A_FIELD_SHAPES.settleCapMs),
 })
 
 /**
