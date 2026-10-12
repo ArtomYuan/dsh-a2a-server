@@ -896,7 +896,7 @@ function buildAgentCard(host: string, port: number): AgentCard {
       organization: 'deepseek',
       url: 'https://github.com/deepseek-ai',
     },
-    version: '0.5.0',
+    version: '0.5.1',
     capabilities: {
       streaming: true,
       pushNotifications: false,
