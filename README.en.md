@@ -108,7 +108,8 @@ are not hard-bound; combine them as needed:
 
 Since 0.3.0, moving between dsh 0.1.5 and 0.2.0 (in either direction) requires no
 plugin change; since 0.4.0 the settings area (GUI) is available on dsh 0.2.0; since
-0.5.0 the live stream (text/thinking frames) is restored on dsh 0.2.0. See
+0.5.0 the live stream (text/thinking frames) is restored on dsh 0.2.0; since
+0.5.1 the lead release waits for active subagents to settle (`settleCapMs`). See
 [CONFIGURATION.en.md](CONFIGURATION.en.md) for mechanics.
 
 ## Installation
@@ -124,7 +125,7 @@ workspace), distributed as a standalone bundle.
      dsh plugin --profile <name> add @artomyuan/dsh-a2a-server
      ```
 
-     Pin a version when needed: `dsh plugin --profile <name> add @artomyuan/dsh-a2a-server@0.5.0`.
+     Pin a version when needed: `dsh plugin --profile <name> add @artomyuan/dsh-a2a-server@0.5.1`.
 
    - **From the GitHub source** (to try unreleased changes; **the commit must be pinned**):
 
