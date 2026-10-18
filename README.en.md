@@ -1,5 +1,11 @@
 # dsh-a2a-server
 
+> **Merged (2026-10-19)**: this repository is now part of
+> [`dsh-hermes-link`](https://github.com/ArtomYuan/dsh-hermes-link) — bridge and server ship as
+> one product (package name and install path unchanged, lock-step versions from 0.10.0). This
+> repository keeps the history up to 0.7.0 and the frozen tag `v0.7.0`.
+
+
 **English** | [简体中文](README.md)
 
 A server plugin library that exposes dsh agent sessions through the A2A

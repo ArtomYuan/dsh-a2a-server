@@ -1,5 +1,10 @@
 # dsh-a2a-server
 
+> **已合并（2026-10-19）**：本库并入 [`dsh-hermes-link`](https://github.com/ArtomYuan/dsh-hermes-link)
+> ——桥与服务端「一个产品」（包名与安装路径不变，版本自 0.10.0 起单号锁步）。本库保留
+> 0.7.0 及更早的历史与 tag（冻结基线 `v0.7.0`），后续开发在新库。
+
+
 [English](README.en.md) | **简体中文**
 
 dsh 侧的 A2A (Agent2Agent) server 插件库：把 dsh agent 会话以 A2A 协议暴露给远端
