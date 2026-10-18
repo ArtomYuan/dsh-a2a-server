@@ -62,6 +62,12 @@ import {
   ServerCallContext,
 } from '@a2a-js/sdk/server'
 import type { AgentExecutor, ExecutionEventBus, RequestContext } from '@a2a-js/sdk/server'
+import {
+  applySandboxTier,
+  readRequestOptions,
+  resolveWorkspaceTarget,
+} from './request-options.ts'
+import type { RequestOptions, SandboxPresetService } from './request-options.ts'
 import { installA2ASettings, A2AConfigSchema, A2ASettingsSchema, DEFAULT_SETTLE_CAP_MS } from './settings.ts'
 import type { A2ASettings } from './settings.ts'
 import {
@@ -193,6 +199,8 @@ async function canonicalCwd(raw: string): Promise<string> {
 interface WorkspaceView {
   id: string
   path: string
+  /** 展示名（注册表 Workspace.title；缺省为路径末段） */
+  title?: string
   sessionIds: readonly SessionId[]
   attachSession?: (sessionId: SessionId) => Promise<void>
 }
@@ -594,6 +602,13 @@ class DshAgentExecutor implements AgentExecutor {
       return
     }
 
+    // §2.1/§2.4：请求级选项（工作区 / 沙箱档）从 `message.metadata` 取；缺省＝现状。
+    // 不合法时**在这里抛**（尚未发布任何任务事件）→ SDK 合成 task + FAILED，客户端拿到
+    // 明确报错；绝不静默改用默认值。
+    const requestOptions: RequestOptions = readRequestOptions(
+      (userMessage as { metadata?: unknown }).metadata,
+    )
+
     try {
       // 1. 每个执行流必须以 task 事件开头
       eventBus.publish(
@@ -669,7 +684,7 @@ class DshAgentExecutor implements AgentExecutor {
             }),
           )
         }
-      }, { taskId, contextId, eventBus, qna: streaming && readsQuestionOptIn(userMessage) })
+      }, { taskId, contextId, eventBus, qna: streaming && readsQuestionOptIn(userMessage) }, requestOptions)
 
       if (this.cancelled.has(taskId)) {
         eventBus.publish(
@@ -724,15 +739,88 @@ class DshAgentExecutor implements AgentExecutor {
     }
   }
 
+  /**
+   * §2.1：把请求级工作区解析成**会话 cwd**；缺省（未带 workspace）原样返回服务端 cwd。
+   *
+   * 宿主无工作区注册表（headless profile）时名字形态仍能落地（建目录并使用该路径），
+   * 只是不进名册；名册登记仍由既有的 `ensureWorkspace + attachSession` 在会话创建后做。
+   */
+  private async resolveRequestCwd(defaultCwd: string, requestOptions: RequestOptions): Promise<string> {
+    if (requestOptions.workspace === undefined) return defaultCwd
+    const registry = this.ctx.get('workspaceRegistry') as WorkspaceRegistryView | undefined
+    const listWorkspaces = registry?.list === undefined
+      ? undefined
+      : () => (registry.list?.() ?? [])
+        .filter((workspace) => typeof workspace.path === 'string')
+        .map((workspace) => ({ path: workspace.path, title: workspace.title ?? '' }))
+    const target = await resolveWorkspaceTarget(requestOptions.workspace, {
+      defaultCwd,
+      ...(listWorkspaces === undefined ? {} : { listWorkspaces }),
+      canonicalize: canonicalCwd,
+      ensureDir: async (path: string) => { await mkdir(path, { recursive: true }) },
+    })
+    console.log(
+      `[dsh-a2a-server] 工作区请求=${JSON.stringify(requestOptions.workspace)} ` +
+      `命中=${target.via} title=${JSON.stringify(target.title)} cwd=${target.cwd}`,
+    )
+    return target.cwd
+  }
+
   /** 按 contextId 解析 dsh 会话执行任务，返回最终 assistant 文本；句柄任务毕 flush + 释放 */
   private async runDshTask(
     text: string,
     contextId: string,
     onEvent: (desc: StreamEventDescriptor) => void,
     questionSink: OwnedTask,
+    requestOptions: RequestOptions,
   ): Promise<string> {
-    const cwd = await canonicalCwd(runtimeConfig.cwd || process.cwd())
+    const defaultCwd = await canonicalCwd(runtimeConfig.cwd || process.cwd())
+    // §2.1 工作区：请求级 cwd。缺省＝服务端配置的 cwd（与升级前逐字一致）；
+    // 带名字/路径时解析成会话 cwd——而会话复用键本就含 cwd（`${contextId}\0${cwd}`），
+    // 故「同对话换工作区」自然落到新会话，同区自然复用（串区由键本身挡住）。
+    const cwd = await this.resolveRequestCwd(defaultCwd, requestOptions)
     const { sessionId, handle } = await resolveSession(this.ctx, cwd, contextId)
+
+    // §2.4 沙箱档：经 dsh 自己的 permissionPresets 写路径落成**会话级覆盖**（幂等）。
+    // 缺省不传＝不动；宿主缺该插件/预设时响亮告警并保持现状。
+    if (requestOptions.sandbox !== undefined) {
+      const outcome = applySandboxTier(
+        {
+          presets: this.ctx.get('permissionPresets') as SandboxPresetService | undefined,
+          warn: (message: string) => { console.warn(message) },
+        },
+        handle.agent.session as unknown as object,
+        requestOptions.sandbox,
+      )
+      console.log(
+        `[dsh-a2a-server] 沙箱档请求=${requestOptions.sandbox} 结果=${outcome} ` +
+        `session=${String(sessionId)}`,
+      )
+      // 档位未落地必须让**调用方可见**（核验指出：此前只写服务端日志，回执却写着请求值，
+      // 调用方会以为已生效）。流式任务在流里发一条文本告警；同步任务不污染 artifacts。
+      if (outcome === 'unavailable' && (executionMode.getStore()?.streaming ?? false)) {
+        questionSink.eventBus.publish(
+          AgentEvent.artifactUpdate({
+            taskId: questionSink.taskId,
+            contextId: questionSink.contextId,
+            artifact: {
+              artifactId: randomUUID(),
+              name: 'SandboxTierWarning',
+              description: '沙箱档未能落地（告警）',
+              parts: [textPart(
+                `⚠️ 沙箱档 ${requestOptions.sandbox} 未能落地（本部署缺该权限预设或写入失败），` +
+                '当前档位保持不变——详见服务端日志。',
+              )],
+              metadata: undefined,
+              extensions: [],
+            },
+            append: false,
+            lastChunk: false,
+            metadata: undefined,
+          }),
+        )
+      }
+    }
 
     // §2.6：登记「首跳完成信号」（所有任务都登记——续投分支活到终态才返回，靠它避免
     // 提前返回时 SDK 收掉仍在跑的总线）；**认领表只在客户端声明过问答能力时登记**，
@@ -1021,7 +1109,7 @@ function buildAgentCard(host: string, port: number): AgentCard {
       organization: 'deepseek',
       url: 'https://github.com/deepseek-ai',
     },
-    version: '0.6.0',
+    version: '0.7.0',
     capabilities: {
       streaming: true,
       pushNotifications: false,

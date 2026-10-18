@@ -132,6 +132,48 @@ entering a no-timeout wait.
 - Known limitation: with several concurrent A2A tasks on one session, question attribution is
   ambiguous (claims are keyed by agent); not covered yet.
 
+## Request-level options: workspace and sandbox tier (since 0.7.0, §2.1/§2.4)
+
+A client may put two optional keys in the initial message's `message.metadata` (both omitted =
+today's behaviour, byte-for-byte unchanged):
+
+```jsonc
+{"x-dsh-workspace": "my-book",              // workspace name, or an absolute path "/srv/books/my-book"
+ "x-dsh-sandbox": "workspace-write"}        // read-only | workspace-write | danger-full-access
+```
+
+- **Workspace**: a name is matched exactly against existing workspaces by title / directory
+  name (unique hit wins; several hits → error, never a guess); no hit → a same-named directory
+  is created under the server cwd and registered; an absolute path is realpath-normalised and
+  used (created if missing). The resolved path becomes the session cwd. The session-reuse key already contains
+  the cwd ⇒ **switching workspace in one conversation opens a new session**, the same workspace
+  reuses it.
+- **Sandbox tier**: applied to that **session** through dsh's `permissionPresets` (the same
+  write path as the GUI sandbox switch: `permission/preset` + `sandbox/mode` +
+  `approval/policy`, idempotent). In this deployment `read-only`/`workspace-write` pair with
+  `approval=ask`, `danger-full-access` with `never`.
+- **Read scoping (corrected after review, 2026-10-18)**: none of the three tiers restricts
+  reads (bwrap always `--ro-bind / /`); however "confines writes only" holds for `read-only`
+  and `workspace-write` — `danger-full-access` **confines nothing**. The `workspace-write`
+  writable set is **more than the session cwd**: it also includes `/tmp` (a private tmpfs under
+  bwrap, the real `/tmp` under Landlock/Seatbelt) and `os.tmpdir()`.
+- **An absolute path is an explicit escape hatch**: the server keeps no allowlist; pointing
+  `workspace` at `/` with `workspace-write` makes the whole disk writable — use with care.
+- **To verify live**: this deployment pairs `read-only`/`workspace-write` with `approval=ask`,
+  and the A2A path has no approval answerer; whether ordinary writes under `workspace-write`
+  become "unavailable" (rather than a sandbox denial) must be measured after the host reload
+  (§3.4).
+- **Invalid values** (unknown tier, empty workspace, a name containing path separators, a path
+  containing `..` segments, …) close the task as FAILED with a clear reason — **never silently
+  replaced by defaults**.
+- No config key is added or removed; when the host lacks `permissionPresets` the server warns
+  and leaves the tier unchanged.
+- **"with workspace" and "without workspace" count as two different workspaces in one
+  conversation**: omitting it means the generic workspace (pre-upgrade behaviour), so the two
+  land in **two sessions** (the reuse key contains the cwd). Remembering the choice across
+  calls is §2.2 (first-use selection / binding, not implemented this round); until then callers
+  should pass `workspace` on every call.
+
 ## Relationship with hermes-a2a-bridge
 
 This library exposes a standard A2A interface and does not depend on any specific

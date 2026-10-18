@@ -7,6 +7,55 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.7.0] - 2026-10-18
+
+> §2.1 **工作区选择** ＋ §2.4 **沙箱档** 的**服务端侧**：从 A2A 首投报文的
+> `message.metadata` 读两个可选键（`x-dsh-workspace` / `x-dsh-sandbox`），据此解析会话
+> cwd 与落沙箱档。**缺省不带＝现状**：不改服务端配置面、不改既有行为的任何一行。
+
+### Added
+
+- **`src/request-options.ts`**（新；纯逻辑＋依赖注入，零 dsh 运行时依赖，单独成
+  `lib/request-options.js` entry 供单测）：
+  - `readRequestOptions` / `parseSandboxTier` / `parseWorkspaceSpec`：metadata 解析与严格
+    校验（三档精确值；工作区名字禁路径分隔符、禁 `.`/`..`、≤64 字符；路径形态禁 `..` 段）；
+  - `resolveWorkspaceTarget`：名字 → 现有工作区 title / 目录名精确匹配（唯一命中即用；
+    多命中报错不猜）；查无 → 服务端 cwd 下建同名目录；绝对路径形态直接采用（不存在就建）；
+  - `applySandboxTier`：经 `ctx.permissionPresets.set(session, 档名)` 落成**会话级覆盖**
+    （与 GUI 手切沙箱同一条写路径，幂等）；宿主缺插件 / 预设表无此档 / 写入抛错 → 响亮
+    告警并保持现状。
+- **请求级 cwd**：`resolveSession` 的复用键本就含 cwd（`${contextId}\0${cwd}`），故
+  「同对话换工作区＝新会话、同区复用」由键本身保证；工作区名册登记沿用既有
+  `ensureWorkspace + attachSession`。
+- **沙箱档落地点**：会话解析之后、`followup` 之前落档（首轮即生效）；同档重复请求不写
+  事件（`permissionPresets.set` 幂等）。
+- 测试：`tests/request-options.test.mjs`（10 例：线上键字面量锁、解析/校验（含 C1/bidi 控制字符与 null 对称）、工作区四路解析、档位五种出口）、
+  `tests/request-options-contract.test.mjs`（2 例：**线上契约**——两个 metadata 键经 SDK
+  JSON-RPC 编解码后原样到达 executor；不带 metadata 时为 `undefined`）。
+
+### Changed
+
+- `execute()` 在发布任务事件**之前**先做**语法级**解析：形状不合法即抛 → SDK 合成 task +
+  FAILED，客户端拿到明确报错（绝不静默改用默认值）。**工作区语义级错误**（名字歧义、
+  mkdir 失败等）发生在解析/建目录阶段，可能已在 SUBMITTED/WORKING 之后——同样以 FAILED
+  收口并带原因。
+- `runDshTask` 新增 `requestOptions` 参数与 `resolveRequestCwd`；新增两行信息日志
+  （工作区：请求/命中方式/cwd；沙箱档：请求/结果/session）。
+- `tsdown.prepare.config.ts` 增加 `src/request-options.ts` entry；`package.json` test 脚本
+  纳入两个新测试文件；agent card `version` 同步 0.7.0。
+
+### 兼容性与圈定口径
+
+- 不新增 / 不删除配置键；不带请求级选项的投递行为与 0.6.0 逐字一致。
+- 「读」的圈定程度（核验修正）三档都**不限制读**；「只圈写」仅对 `read-only` /
+  `workspace-write` 成立（`danger-full-access` 完全不圈）。`workspace-write` 的可写面除
+  会话 cwd 外还包括 `/tmp` 与 `os.tmpdir()`（bwrap 下 /tmp 是私有 tmpfs）。
+- **档位未落地可感**：宿主缺预设/写入失败时，除服务端告警外，**流式任务会在流里发一条
+  文本告警**（同步任务不污染 artifacts）——调用方不再"以为生效"。
+- 沙箱档为**会话级覆盖**：后续请求带不同档位会切换该会话档位；不带则不动。
+- 已知边界：同一对话换工作区会新开会话（预期行为），旧会话与其结果回传地址不变
+  （§2.5 锁会话对账在后续段落实现）。
+
 ## [0.6.0] - 2026-10-17
 
 > §2.6 **交互问答桥接（服务端侧）**：dsh 会话中途的 `ask_user_question` 现在可以在

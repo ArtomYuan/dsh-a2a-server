@@ -7,6 +7,66 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] - 2026-10-18
+
+> The **server side** of §2.1 **workspace selection** and §2.4 **sandbox tier**: two optional
+> keys are read from the A2A initial message's `message.metadata` (`x-dsh-workspace` /
+> `x-dsh-sandbox`) and used to resolve the session cwd and apply the sandbox tier.
+> **Omitted = today's behaviour**: no config surface changes and no existing behaviour changes.
+
+### Added
+
+- **`src/request-options.ts`** (new; pure logic with injected dependencies, zero dsh runtime
+  dependency, its own `lib/request-options.js` entry for unit tests):
+  - `readRequestOptions` / `parseSandboxTier` / `parseWorkspaceSpec`: metadata parsing and
+    strict validation (exact three-tier values; workspace names reject path separators, `.`/`..`,
+    and are ≤64 chars; path form rejects `..` segments);
+  - `resolveWorkspaceTarget`: a name is matched exactly against existing workspaces by title /
+    directory name (unique hit wins; several hits → error, never a guess); no hit → a same-named
+    directory under the server cwd; an absolute path is used as-is (created if missing);
+  - `applySandboxTier`: applies a **session-level override** through
+    `ctx.permissionPresets.set(session, tier)` (the same write path as the GUI sandbox switch,
+    idempotent); a missing plugin / an unknown preset name / a write error warns loudly and
+    leaves the current tier untouched.
+- **Request-level cwd**: `resolveSession`'s reuse key already contains the cwd
+  (`${contextId}\0${cwd}`), so "switch workspace in one conversation = new session, same
+  workspace = reuse" is guaranteed by the key itself; roster registration reuses the existing
+  `ensureWorkspace + attachSession`.
+- **Where the tier lands**: after session resolution and before `followup` (effective from the
+  first turn); repeating the same tier appends no event (`permissionPresets.set` is idempotent).
+- Tests: `tests/request-options.test.mjs` (10 cases: wire-literal lock, parsing/validation incl. C1/bidi control characters and null symmetry, four workspace resolution paths, five tier outcomes) and
+  `tests/request-options-contract.test.mjs` (2 cases: **wire contract** — both metadata keys
+  arrive intact at the executor after the SDK's JSON-RPC encode/decode; `undefined` when absent).
+
+### Changed
+
+- `execute()` performs **syntactic** parsing before publishing any task event: an invalid shape
+  throws there → the SDK synthesises task + FAILED and the client receives a clear error (never
+  silently replaced by defaults). **Semantic workspace errors** (ambiguous name, mkdir failure)
+  happen during resolution/creation and may occur after SUBMITTED/WORKING — they still close as
+  FAILED with the reason.
+- `runDshTask` gains a `requestOptions` parameter and a `resolveRequestCwd` helper; two
+  informational log lines were added (workspace: request/hit-kind/cwd; sandbox: request/outcome/session).
+- `tsdown.prepare.config.ts` gains the `src/request-options.ts` entry; the `package.json` test
+  script includes both new test files; the agent-card `version` is synced to 0.7.0.
+
+### Compatibility and scoping
+
+- No config key is added or removed; deliveries without request-level options behave exactly as
+  in 0.6.0.
+- Read scoping (corrected after review): none of the three tiers restricts reads; "confines
+  writes only" holds for `read-only` / `workspace-write` (`danger-full-access` confines
+  nothing). The `workspace-write` writable set includes, besides the session cwd, `/tmp` and
+  `os.tmpdir()` (a private tmpfs under bwrap).
+- **An unapplied tier is now visible**: when the host lacks the preset or the write fails, the
+  server warns *and* a streaming task emits a text warning in the stream (synchronous tasks do
+  not pollute artifacts) — callers can no longer believe it applied.
+- The sandbox tier is a **session-level override**: a later request with a different tier
+  switches that session; omitting it changes nothing.
+- Known boundary: switching workspace within one conversation opens a new session (intended);
+  the old session and its result-delivery address are unchanged (§2.5 lock-session
+  reconciliation lands in a later section).
+
 ## [0.6.0] - 2026-10-17
 
 > §2.6 **Interactive Q&A bridge (server side)**: a mid-task dsh `ask_user_question` can
