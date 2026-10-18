@@ -7,6 +7,81 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] - 2026-10-17
+
+> §2.6 **Interactive Q&A bridge (server side)**: a mid-task dsh `ask_user_question` can
+> now be **seen and answered** over A2A — while suspended the task enters
+> `INPUT_REQUIRED` and the question payload goes out with the stream; the answer comes
+> back as a **continuation on the same `taskId`**, releasing the first hop, whose
+> remaining events flow on the continuation stream.
+> **No timeout anywhere** (fixed requirement); **claiming requires an explicit client
+> declaration**, so undeclared callers behave exactly as in 0.5.1.
+
+### Added
+
+- **`src/questions.ts`** (new; pure logic, no dsh runtime dependency, its own
+  `lib/questions.js` entry for unit tests): normalization `toQuestionItems`, payload
+  builder `questionPayload`, claim `claimQuestion`, answer parsing `readQuestionAnswer`,
+  release `resolveQuestion` (exact `askId` first; when exactly one ask is pending an
+  `askId`-less degraded hit is allowed **with a loud warning**; a stale token warns and is
+  ignored), task-end release `abandonQuestions`.
+- **Question seam**: a **prepended** listener on dsh's `user-questions/request`
+  (agent-scoped waterfall) that claims **only agents running our own A2A tasks** and calls
+  `next()` otherwise — the GUI answerer keeps working (line priority: questions of an
+  A2A-owned session belong to the line that started it).
+- **Two visible surfaces**: (1) a `question` event (`artifactUpdate` + `data` part, which
+  the bridge renders into a card); (2) `statusUpdate(INPUT_REQUIRED)` whose status message
+  carries the same payload, so `tasks/get` shows which task awaits which question.
+- **`question-answer` data-part return path**: the continuation carries `askId` plus
+  structured answers (`answers[].selected` / `custom`); `skipped=true` means the user
+  skipped (closed as aborted).
+- **Client capability declaration**: only tasks whose first message carries
+  `metadata["x-dsh-user-questions"]=true` (and streams) are claimed. **This is what keeps
+  the default unchanged**: undeclared callers (older bridges, direct A2A clients) still see
+  the question fail immediately with `NO_PROVIDER` instead of entering a no-timeout wait —
+  otherwise a question would be parked where no answer can ever arrive and hang silently.
+- **No dangling waits**: three exits — answered / `signal` aborted / task ended; `cancelTask`
+  also releases pending questions, and every task path ends with `abandonQuestions` so the
+  asker receives an abort rather than hanging forever.
+- **Misused continuations are closed explicitly**: a `taskId` continuation without an answer
+  payload, when the task *is* awaiting an answer, gets `INPUT_REQUIRED` back to end that
+  stream (the SDK terminates cleanly at input-required), so the client learns the task awaits
+  input; the original question keeps waiting for a real answer and the first hop is
+  unaffected. **No stream is left with just a snapshot and then silence.**
+- Tests: `tests/questions.test.mjs` (8 cases) and `tests/qna-continuation.test.mjs`
+  (4 cases: **A2A-side contract regression** — `input-required` ends the first stream,
+  `taskId` continuation is accepted, the continuation stream receives the first hop's later
+  events, capability metadata survives, plus one deliberate tripwire).
+
+### Changed
+
+- **`execute()` handles continuations**: a message carrying a `taskId`
+  (`requestContext.task` present) no longer starts a fresh dsh turn; it goes through
+  `resumeTask`.
+- New `resumeTask`: publish a **task snapshot first**, then release — the continuation is a
+  **new stream** and the SDK's `_advanceStreamPattern` requires its first frame to be
+  task/message, otherwise it throws `UnsupportedOperationError` ("Received artifactUpdate
+  before initial 'Message'/'Task' event", measured at runtime). Afterwards the answer is
+  matched by `askId`, and the call **conservatively waits for the first hop's terminal
+  state** — the answer path does not rely on the SDK detail that `INPUT_REQUIRED` keeps the
+  bus alive, whereas the "misused continuation closed with `INPUT_REQUIRED`" path below
+  **does** (verified: `keepBusAliveStates` includes `INPUT_REQUIRED` by default, so the first
+  hop's bus is never cleaned up and the task is never put into a false terminal state).
+- `runDshTask` registers the first-hop drain (always) and the claim-table entry (declared
+  tasks only); its `finally` unregisters first, then releases pending questions and
+  continuation waiters (the order matters).
+- `cancelTask` releases that task's pending questions.
+- `tsdown.prepare.config.ts` gains the `src/questions.ts` entry (matching the
+  settle/compat precedent); the `package.json` test script now includes both new test files.
+- Agent-card `version` synced to 0.6.0.
+
+### Compatibility
+
+- No config key added or removed; undeclared callers (including the synchronous
+  `SendMessage` path) behave **exactly as in 0.5.1**.
+- Known limitation: with several concurrent A2A tasks on one session, question attribution
+  is ambiguous (claims are keyed by agent); not covered in v1.
+
 ## [0.5.1] - 2026-10-12
 
 ### Changed

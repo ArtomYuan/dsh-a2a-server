@@ -64,6 +64,16 @@ import {
 import type { AgentExecutor, ExecutionEventBus, RequestContext } from '@a2a-js/sdk/server'
 import { installA2ASettings, A2AConfigSchema, A2ASettingsSchema, DEFAULT_SETTLE_CAP_MS } from './settings.ts'
 import type { A2ASettings } from './settings.ts'
+import {
+  abandonQuestions,
+  claimQuestion,
+  continuationDisposition,
+  pendingQuestionCount,
+  readQuestionAnswer,
+  resolveQuestion,
+  toQuestionItems,
+} from './questions.ts'
+import type { OwnedTask, UserQuestionRequest } from './questions.ts'
 import { waitForSubagentQuiescence } from './settle.ts'
 import type { SettleHost, SettleOutcome, SubagentChildrenSource, SubagentSignal } from './settle.ts'
 import {
@@ -108,6 +118,23 @@ export type Config = A2ASettings
 
 /** 逐请求携带执行模式（同步 / 流式）：HTTP 层写入，execute 内读取 */
 const executionMode = new AsyncLocalStorage<{ streaming: boolean }>()
+
+/**
+ * §2.6 问答能力的客户端声明键：仅当来消息的 ``metadata`` 显式带上
+ * ``{"x-dsh-user-questions": true}`` 时，本插件才认领该会话的提问。
+ *
+ * 为什么必须显式声明：「认领」＝由本插件接手作答，如果调用方根本没能力作答（不是
+ * hermes-a2a-bridge，或桥没跑），提问就会被挂到一个永远收不到答案的地方——而问答
+ * 全程零超时，等于无声挂死。声明制让**缺省行为与今天一致**（提问照旧以 NO_PROVIDER
+ * 立刻失败），只有声明过的调用方才进入问答桥接。
+ */
+const QNA_OPT_IN_KEY = 'x-dsh-user-questions'
+
+/** 读客户端问答能力声明（缺省 false＝不认领） */
+function readsQuestionOptIn(message: { metadata?: unknown } | undefined): boolean {
+  const metadata = message?.metadata as Record<string, unknown> | undefined
+  return metadata?.[QNA_OPT_IN_KEY] === true
+}
 
 /** 运行时配置（apply 时从 config / settings / 环境初始化，提供安全默认值） */
 const runtimeConfig = {
@@ -525,6 +552,15 @@ async function resolveSession(
   return { sessionId: newSessionId, handle }
 }
 
+// ─── §2.6 交互问答桥接 ─────────────────────────────────────────────────────
+// 提问的规范化 / 载荷构造 / 挂起-解挂-放弃等纯逻辑在 ./questions.ts（可纯单测）；
+// 本文件负责接线：认领者注册、续投识别、任务生命周期与事件流。
+
+/** agent → 名下任务（WeakMap 无法枚举，故用 Map 并在任务收场时显式清） */
+const ownedTaskByAgent = new Map<object, OwnedTask>()
+/** taskId → 首跳跑完信号：续投分支等它，避免提前返回时 SDK 收掉仍在跑的总线 */
+const taskDrains = new Map<string, { promise: Promise<void>; release: () => void }>()
+
 /**
  * 把 A2A task 映射为一次 dsh agent 同步执行（最小版：每次新建独立会话）。
  * `execute` 按 A2A 规范发布 task → statusUpdate(working) → artifact →
@@ -538,6 +574,8 @@ class DshAgentExecutor implements AgentExecutor {
 
   async cancelTask(taskId: string, _eventBus: ExecutionEventBus): Promise<void> {
     this.cancelled.add(taskId)
+    // §2.6：任务被取消时未决提问一律放行——宁可让提问方收到中止，也不悬挂到天荒地老。
+    abandonQuestions(taskId)
   }
 
   async execute(requestContext: RequestContext, eventBus: ExecutionEventBus): Promise<void> {
@@ -548,6 +586,13 @@ class DshAgentExecutor implements AgentExecutor {
     // 同步 SendMessage 与流式 SendStreamingMessage 复用本 execute；同步时只应
     // 返回最终结果文本，中间事件不得作为 artifact 泄露进 task.artifacts
     const streaming = executionMode.getStore()?.streaming ?? false
+
+    // §2.6：带 taskId 的请求＝对已有任务的续投（`_createRequestContext` 只在报文带
+    // taskId 时填 requestContext.task）。问答桥接的作答正是走这条路，不能重开一轮。
+    if (requestContext.task !== undefined) {
+      await this.resumeTask(requestContext, eventBus)
+      return
+    }
 
     try {
       // 1. 每个执行流必须以 task 事件开头
@@ -624,7 +669,7 @@ class DshAgentExecutor implements AgentExecutor {
             }),
           )
         }
-      })
+      }, { taskId, contextId, eventBus, qna: streaming && readsQuestionOptIn(userMessage) })
 
       if (this.cancelled.has(taskId)) {
         eventBus.publish(
@@ -684,9 +729,25 @@ class DshAgentExecutor implements AgentExecutor {
     text: string,
     contextId: string,
     onEvent: (desc: StreamEventDescriptor) => void,
+    questionSink: OwnedTask,
   ): Promise<string> {
     const cwd = await canonicalCwd(runtimeConfig.cwd || process.cwd())
     const { sessionId, handle } = await resolveSession(this.ctx, cwd, contextId)
+
+    // §2.6：登记「首跳完成信号」（所有任务都登记——续投分支活到终态才返回，靠它避免
+    // 提前返回时 SDK 收掉仍在跑的总线）；**认领表只在客户端声明过问答能力时登记**，
+    // 未声明的调用方保持现状行为（提问以 NO_PROVIDER 立刻失败，绝不无声挂起）。
+    const agentKey = handle.agent as unknown as object
+    const drain = Promise.withResolvers<void>()
+    taskDrains.set(questionSink.taskId, { promise: drain.promise, release: () => { drain.resolve() } })
+    if (questionSink.qna === true) {
+      ownedTaskByAgent.set(agentKey, questionSink)
+    } else {
+      console.warn(
+        `[dsh-a2a-server] 调用方未声明问答能力（metadata.${QNA_OPT_IN_KEY}=true），` +
+        `本任务不认领提问: task=${questionSink.taskId}`,
+      )
+    }
 
     try {
       const baseline = ((handle.agent.session as unknown as { log?: unknown[] }).log ?? []).length
@@ -863,6 +924,12 @@ class DshAgentExecutor implements AgentExecutor {
       }
       return out.trim() || '(no text output)'
     } finally {
+      // §2.6：先摘牌（此后新请求不再认领到本任务），再放行未决提问与续投等待者。
+      // 顺序不能反：先放 drain 会让续投分支抢先返回，而此刻仍有未决提问可解。
+      ownedTaskByAgent.delete(agentKey)
+      taskDrains.delete(questionSink.taskId)
+      abandonQuestions(questionSink.taskId)
+      drain.resolve()
       // 跨重启 resume 依赖会话已持久化：任务毕 flush，再释放句柄
       try {
         await (this.ctx.get('sessions') as { flush?: (s: unknown) => Promise<unknown> } | undefined)?.flush?.(handle.agent.session)
@@ -875,6 +942,64 @@ class DshAgentExecutor implements AgentExecutor {
         /* 释放失败不影响结果 */
       }
     }
+  }
+
+  /**
+   * 续投分支（§2.6 作答归途）：先补 task 快照（新流首帧硬要求），再按 `askId` 解挂，
+   * 最后保守地等首跳终态——只补快照已足够保活总线（spike 变体实证），但显式等待
+   * 不依赖该细节。未命中未决提问时响亮报警并忽略，绝不静默吞掉作答。
+   */
+  private async resumeTask(requestContext: RequestContext, eventBus: ExecutionEventBus): Promise<void> {
+    const taskId = requestContext.taskId
+    const contextId = requestContext.contextId
+    const snapshot = requestContext.task
+    eventBus.publish(
+      AgentEvent.task({
+        id: taskId,
+        contextId,
+        status: snapshot?.status ?? {
+          state: TaskState.TASK_STATE_INPUT_REQUIRED,
+          timestamp: new Date().toISOString(),
+          message: undefined,
+        },
+        artifacts: snapshot?.artifacts ?? [],
+        history: snapshot?.history ?? [],
+        metadata: snapshot?.metadata,
+      }),
+    )
+    const answer = readQuestionAnswer(requestContext.userMessage as { parts?: Part[] } | undefined)
+    const disposition = continuationDisposition(answer, pendingQuestionCount(taskId))
+    if (disposition === 'input-required') {
+        // 协议误用：该任务正等作答，而这条续投**没带作答载荷**（既不是 answer 也不是
+        // skip）。若只是"放行"，本次流的首帧（task 快照）之后不会再有事件——客户端会
+        // 拿到一条永远没有终态的流。这里**明确回一个 INPUT_REQUIRED**：SDK 在
+        // input-required 处正常收束流，客户端据此知道「任务在等输入」，不再是静默悬挂。
+        // 首跳不受影响：总线因 INPUT_REQUIRED 保活，原提问仍在等真正的作答。
+        console.warn(
+          `[dsh-a2a-server] 续投未带作答载荷但任务正等作答（${pendingQuestionCount(taskId)} 个未决）: ` +
+          `task=${taskId}——以 INPUT_REQUIRED 收束本次流`,
+        )
+        eventBus.publish(
+          AgentEvent.statusUpdate({
+            taskId,
+            contextId,
+            status: {
+              state: TaskState.TASK_STATE_INPUT_REQUIRED,
+              timestamp: new Date().toISOString(),
+              message: undefined,
+            },
+            metadata: {},
+          }),
+        )
+        return
+    }
+    if (disposition === 'plain') {
+      console.warn(`[dsh-a2a-server] 续投报文不含 question-answer data part: task=${taskId}——按普通续投放行`)
+    } else if (answer !== undefined && !resolveQuestion(taskId, answer)) {
+      console.warn(`[dsh-a2a-server] 续投作答未命中未决提问: task=${taskId} askId=${answer.askId ?? '(none)'}`)
+    }
+    const drain = taskDrains.get(taskId)
+    if (drain !== undefined) await drain.promise
   }
 }
 
@@ -896,7 +1021,7 @@ function buildAgentCard(host: string, port: number): AgentCard {
       organization: 'deepseek',
       url: 'https://github.com/deepseek-ai',
     },
-    version: '0.5.1',
+    version: '0.6.0',
     capabilities: {
       streaming: true,
       pushNotifications: false,
@@ -1033,6 +1158,31 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
   const executor = new DshAgentExecutor(ctx)
   const requestHandler = new DefaultRequestHandler(agentCard, taskStore, executor)
   const transport = new JsonRpcTransportHandler(requestHandler)
+
+  // §2.6 问答认领者：**prepend** 注册（线优先——A2A 名下会话的提问归飞书线，
+  // 不被 GUI 的作答面抢走）；只认自己名下正在跑任务的 agent，其余一律 `next()`
+  // 放行，故本插件之外的提问（含 GUI 会话）行为零变化。
+  // 事件名由 dsh 侧 @deepseek-ai/dsh-user-questions 声明；本包不引该依赖，
+  // 按本文件既有先例（`agent/assistant-stream`）局部收窄 ctx.on 的签名。
+  const onUserQuestion = ctx.on as unknown as (
+    event: string,
+    listener: (request: UserQuestionRequest, next: () => Promise<unknown>) => Promise<unknown>,
+    options?: { prepend?: boolean },
+  ) => () => void
+  ctx.effect(
+    () => onUserQuestion('user-questions/request', (request, next) => {
+      const agent = request?.agent as object | undefined
+      const owned = agent === undefined ? undefined : ownedTaskByAgent.get(agent)
+      if (owned === undefined) return next()
+      const items = toQuestionItems(request?.questions)
+      if (items.length === 0) return next()
+      // dsh 的作答契约：waterfall 的返回必须是 `{ answers: [...] }`
+      // （dsh-tool-ask-user 直接取 `result.answers.map`；裸投数组会炸 undefined.map）。
+      return claimQuestion(owned, items, request?.signal)
+        .then((answers) => ({ answers })) as unknown as Promise<unknown>
+    }, { prepend: true }),
+    'dsh-a2a-server: user-questions answerer',
+  )
 
   const server = http.createServer(async (req, res) => {
     // Bearer token 认证（配置了 authToken 时强制所有请求校验）

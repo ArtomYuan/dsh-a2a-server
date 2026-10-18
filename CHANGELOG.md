@@ -7,6 +7,67 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.6.0] - 2026-10-17
+
+> §2.6 **交互问答桥接（服务端侧）**：dsh 会话中途的 `ask_user_question` 现在可以在
+> A2A 上被**看到并作答**——提问挂起时任务进入 `INPUT_REQUIRED`，问题载荷随流送出；
+> 作答沿**同一 `taskId` 的续投**回来解挂，首跳继续跑完，后续事件发在续投那条流上。
+> **全程零超时**（已定死）；**认领需客户端显式声明**，未声明者行为与 0.5.1 逐字一致。
+
+### Added
+
+- **`src/questions.ts`**（新；纯逻辑、零 dsh 运行时依赖，单独成 `lib/questions.js` entry
+  供单测）：提问规范化 `toQuestionItems`、载荷构造 `questionPayload`、挂起认领
+  `claimQuestion`、作答解析 `readQuestionAnswer`、解挂 `resolveQuestion`（`askId` 精确
+  命中优先；唯一未决时允许无 `askId` 降级并**响亮报警**；异常令牌报警且忽略）、
+  收场 `abandonQuestions`。
+- **题目承接缝**：以 **prepend** 注册 dsh 的 `user-questions/request`（agent 作用域
+  waterfall）认领者，**只认自己名下正在跑 A2A 任务的 agent**，其余请求一律 `next()`
+  放行——GUI 既有作答面零回归（线优先：A2A 名下会话的提问归发起那条线）。
+- **两条可见面**：① `question` 事件（`artifactUpdate` + `data` Part，桥据此建卡）；
+  ② `statusUpdate(INPUT_REQUIRED)`，其状态消息携带同一载荷 ⇒ `tasks/get` 可查「哪条任务
+  在等哪道题」。
+- **`question-answer` Data Part 归途**：续投报文带 `askId` + 结构化作答
+  （`answers[].selected` / `custom`），`skipped=true` 表示用户跳过（以中止收口）。
+- **客户端能力声明**：只认领首投报文
+  `metadata["x-dsh-user-questions"]=true`（且流式）的任务。**这是缺省行为不变的保证**：
+  未声明的调用方（旧桥、直接 A2A 客户端）提问照旧以 `NO_PROVIDER` 立刻失败，绝不进入
+  「零超时等待」——否则提问会被挂到一个永远收不到答案的地方而无声挂死。
+- **零悬挂**：提问的三个出口＝作答 / `signal` 中止 / 任务收场；`cancelTask` 亦放行未决
+  提问。任务收场（含异常路径）一律 `abandonQuestions`，宁可让提问方收到中止也不悬挂。
+- **误用续投明确收束**：带 `taskId` 却不带作答载荷、而该任务正等作答时，明确回
+  `INPUT_REQUIRED` 收束本次流（SDK 在 input-required 处正常结束流），客户端据此知道
+  「任务在等输入」；原提问仍等真正的作答，首跳不受影响。**不再有一条只见快照、
+  再无声息的流**。
+- 测试：`tests/questions.test.mjs`（8 例：载荷与流形状、续投三态判定、解挂严格性、降级命中、
+  跳过语义、零悬挂、作答解析）、`tests/qna-continuation.test.mjs`（4 例：**A2A 侧契约回归**——
+  `input-required` 收束首流、`taskId` 续投受理、续投流拿到首跳后续事件、能力声明穿透，
+  外加一条刻意保留的绊线）。
+
+### Changed
+
+- **`execute()` 支持续投**：报文带 `taskId`（`requestContext.task` 非空）时不再重开一轮
+  dsh 执行，改走 `resumeTask`。
+- 新增 `resumeTask`：**先补一个 `task` 快照**再解挂——续投是**新的一条流**，而 SDK 的
+  `_advanceStreamPattern` 要求新流首帧必须是 task/message，否则直接
+  `UnsupportedOperationError`（"Received artifactUpdate before initial 'Message'/'Task'
+  event"，运行期实证）；随后按 `askId` 解挂，并**保守地等首跳终态再返回**。作答路径不
+  依赖「`INPUT_REQUIRED` 保活总线」这一 SDK 细节；而下面「误用续投以 `INPUT_REQUIRED`
+  收束」那条路径**确实依赖它**（已核实：SDK `keepBusAliveStates` 默认含 `INPUT_REQUIRED`，
+  故首跳总线不被清理、任务不会被误置终态）。
+- `runDshTask` 登记「首跳完成信号」（所有任务）与「认领表条目」（仅声明过的任务）；
+  `finally` 里先摘牌、再放行未决提问与续投等待者（顺序不能反）。
+- `cancelTask` 放行该任务的未决提问。
+- `tsdown.prepare.config.ts` 增加 `src/questions.ts` entry（照 settle/compat 先例）；
+  `package.json` 的 test 脚本纳入两个新测试文件。
+- agent card `version` 同步 0.6.0。
+
+### 兼容性
+
+- 不新增 / 不删除配置键；未声明问答能力的调用方（含同步 `SendMessage` 路径）
+  **行为与 0.5.1 完全一致**。
+- 已知边界：同一会话并发多个 A2A 任务时的提问归属有歧义（认领以 agent 为键），v1 未覆盖。
+
 ## [0.5.1] - 2026-10-12
 
 ### Changed

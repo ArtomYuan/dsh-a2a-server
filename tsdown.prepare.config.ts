@@ -15,8 +15,10 @@ import { defineConfig } from 'tsdown'
 // 单独成 lib/client/primitive-symbols.js 供 tests/primitive-symbols.test.mjs 单测。
 // `src/settle.ts` 同理：「释放前等活跃子代理结算」的等待原语（纯逻辑、零 dsh 依赖），
 // 单独成 lib/settle.js 供 tests/settle-window.test.mjs 单测。
+// `src/questions.ts` 同理：§2.6 问答桥接的纯逻辑面（提问规范化 / 载荷构造 /
+// 挂起-解挂-放弃，零 dsh 运行时依赖），单独成 lib/questions.js 供 tests/questions.test.mjs 单测。
 export default defineConfig({
-  entry: ['src/index.ts', 'src/compat.ts', 'src/settle.ts', 'src/client/mount-strategy.ts', 'src/client/primitive-symbols.ts'],
+  entry: ['src/index.ts', 'src/compat.ts', 'src/settle.ts', 'src/questions.ts', 'src/client/mount-strategy.ts', 'src/client/primitive-symbols.ts'],
   outDir: 'lib',
   format: ['esm'],
   platform: 'node',

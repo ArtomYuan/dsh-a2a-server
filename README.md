@@ -76,6 +76,46 @@ statusUpdate   submitted → working → completed
 
 ![架构图](assets/architecture-zh.png)
 
+## 交互问答桥接（0.6.0 起，§2.6）
+
+dsh 在任务中途调用 `ask_user_question` 时，本服务端把该提问**接住并发布**到 A2A 流上：
+先发一个 `question` 事件（`artifactUpdate` + `data` Part，含 `askId` 与题目/选项），
+再发 `statusUpdate(INPUT_REQUIRED)`（状态消息里带同一载荷，便于 `tasks/get` 查挂起），
+**首条流在此收束**——等待期不占长连接。
+
+作答沿 **A2A 原生续投**回来：客户端对**同一 `taskId`** 再发一条消息（报文带
+`question-answer` Data Part，含 `askId` + 结构化答案；`skipped=true` 表示跳过），
+服务端按 `askId` 解挂，首跳继续跑完，后续事件发在**续投那条流**上。**全程零超时**。
+
+**客户端能力声明（缺省行为不变的保证）**：只有首投报文带
+`metadata: {"x-dsh-user-questions": true}`（且走流式）的任务才会被认领；未声明的调用方
+提问照旧立刻以 `NO_PROVIDER` 失败，不会进入零超时等待。
+
+```jsonc
+// 首投（声明能力）
+{"jsonrpc":"2.0","id":"1","method":"SendStreamingMessage","params":{"message":{
+  "role":"ROLE_USER","messageId":"...","contextId":"feishu/oc_x/omt_y",
+  "metadata":{"x-dsh-user-questions":true},
+  "parts":[{"text":"开工","mediaType":"text/plain"}]}}}
+
+// 续投作答（同一 taskId；data part 是机器可读那一段）
+{"jsonrpc":"2.0","id":"2","method":"SendStreamingMessage","params":{"message":{
+  "role":"ROLE_USER","messageId":"...","taskId":"<首投任务 id>",
+  "parts":[{"data":{"kind":"question-answer","askId":"<question 事件的 askId>",
+                    "answers":[{"id":"q1","selected":["甲路"],"custom":"备注"}]},
+            "mediaType":"application/json"}]}}}
+```
+
+- 不新增 / 不删除任何配置键；**首投**报文的行为与「本版之前」完全一致——未声明能力的
+  调用方（含同步 `SendMessage` 路径）提问照旧立刻以 `NO_PROVIDER` 失败，绝不进入零超时
+  等待。
+- **带 `taskId` 的续投**是唯一新增的请求语义：① 带作答载荷（`question-answer`）→ 解挂；
+  ② 不带载荷且该任务**没有**未决提问 → 视作普通续投放行并等首跳终态；③ 不带载荷而该
+  任务**正等作答** → 明确回 `INPUT_REQUIRED` **收束该次流**（客户端据此知道「任务在等
+  输入」），原提问仍等真正的作答——不会留一条永远没有事件的流。
+- 提问的三个出口＝作答 / 调用方中止 / 任务收场（`cancelTask` 亦放行），绝不悬挂。
+- 已知边界：同一会话并发多个 A2A 任务时提问归属有歧义（认领以 agent 为键），暂未覆盖。
+
 ## 与 hermes-a2a-bridge 的关系
 
 本库暴露标准 A2A 接口，不依赖任何特定客户端——其他 A2A 客户端可直接调用。

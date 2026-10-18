@@ -84,6 +84,54 @@ See [CONFIGURATION.en.md](CONFIGURATION.en.md) for full fields and mechanics.
 
 ![Architecture](assets/architecture-en.png)
 
+## Interactive Q&A bridge (since 0.6.0, §2.6)
+
+When dsh calls `ask_user_question` mid-task, this server **catches and publishes** the
+question onto the A2A stream: first a `question` event (`artifactUpdate` + `data` part with
+`askId` and the question/options), then `statusUpdate(INPUT_REQUIRED)` (whose status message
+carries the same payload so `tasks/get` shows the suspension). **The first stream ends
+there** — the wait holds no long connection.
+
+The answer returns through a **native A2A continuation**: the client sends another message
+for the **same `taskId`** carrying a `question-answer` data part (`askId` + structured
+answers; `skipped=true` means skipped). The server releases the ask, the first hop finishes,
+and its remaining events flow on **the continuation stream**. **No timeout anywhere.**
+
+**Client capability declaration (what keeps the default unchanged)**: only tasks whose first
+message carries `metadata: {"x-dsh-user-questions": true}` (and streams) are claimed;
+undeclared callers still see the question fail immediately with `NO_PROVIDER` instead of
+entering a no-timeout wait.
+
+```jsonc
+// initial message (declares the capability)
+{"jsonrpc":"2.0","id":"1","method":"SendStreamingMessage","params":{"message":{
+  "role":"ROLE_USER","messageId":"...","contextId":"feishu/oc_x/omt_y",
+  "metadata":{"x-dsh-user-questions":true},
+  "parts":[{"text":"start","mediaType":"text/plain"}]}}}
+
+// continuation answer (same taskId; the data part is the machine-readable one)
+{"jsonrpc":"2.0","id":"2","method":"SendStreamingMessage","params":{"message":{
+  "role":"ROLE_USER","messageId":"...","taskId":"<task id from the initial call>",
+  "parts":[{"data":{"kind":"question-answer","askId":"<askId from the question event>",
+                    "answers":[{"id":"q1","selected":["A"],"custom":"note"}]},
+            "mediaType":"application/json"}]}}}
+```
+
+- No config key is added or removed; **initial** messages behave exactly as before this
+  release — undeclared callers (including the synchronous `SendMessage` path) still see the
+  question fail immediately with `NO_PROVIDER`, never a no-timeout wait.
+- **A continuation carrying `taskId`** is the only new request semantic: (1) with an answer
+  payload (`question-answer`) it releases the ask; (2) without a payload and with **no**
+  pending question it is passed through as an ordinary continuation and waits for the first
+  hop's terminal state; (3) without a payload while the task **is** awaiting an answer, the
+  server answers with `INPUT_REQUIRED` and **ends that stream** (the client learns the task
+  awaits input), while the original question keeps waiting for a real answer — no stream is
+  ever left open without events.
+- Three exits for a question — answered / caller aborted / task ended (`cancelTask` releases
+  too); nothing is ever left dangling.
+- Known limitation: with several concurrent A2A tasks on one session, question attribution is
+  ambiguous (claims are keyed by agent); not covered yet.
+
 ## Relationship with hermes-a2a-bridge
 
 This library exposes a standard A2A interface and does not depend on any specific
